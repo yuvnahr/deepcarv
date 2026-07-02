@@ -1,1 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
 venv/
+.venv/
+env/
+.env
+
+# Data (NEVER commit dataset files)
+data/
+datasets/
+*.bin
+*.bytes
+*.raw
+*.frag
+
+# Split CSVs / manifests (generated at runtime)
+# NOTE: If you want to version-control the split CSVs for reproducibility
+# proof, remove the lines below and commit them explicitly.
+# data/splits/
+
+# Checkpoints & model weights
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Outputs & logs
+outputs/
+logs/
+results/
+cache/
+
+# Training artefacts
+training_curves.png
+*.png
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDEs
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Profiling
+*.prof
+*.lprof
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build artefacts
+dist/
+build/
+*.egg-info/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
