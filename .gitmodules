@@ -1,0 +1,3 @@
+[submodule "benchmarks/ByteRCNN"]
+	path = benchmarks/ByteRCNN
+	url = https://github.com/kristian-fer/ByteRCNN.git
