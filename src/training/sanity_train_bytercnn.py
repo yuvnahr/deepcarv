@@ -4,25 +4,24 @@ src/training/sanity_train_bytercnn.py
 Sanity-check training run for the ByteRCNN / FFT-75 benchmark.
 
 Goals:
-  - Verify that data loading, model forward pass, and loss computation
-    are all correctly wired together.
-  - Run FAST: ≤ 2 epochs, ≤ 2 000 training samples.
-  - Save a temporary checkpoint to checkpoints/sanity_bytercnn_fft75.pt.
+  - Verify that NPZ loading, model forward pass, and loss are wired correctly.
+  - Run FAST: ≤ 2 epochs, ≤ 2 000 training samples (tiny_subset mode).
   - Print per-batch loss and end-of-epoch accuracy.
-  - Exit non-zero if anything is broken.
+  - Save a temporary checkpoint to checkpoints/sanity_bytercnn_fft75.pt.
+  - Exit non-zero if anything breaks.
 
 This script is NOT about accuracy — it is about pipeline health.
 
 Usage
 -----
-    # From repo root:
     python -m src.training.sanity_train_bytercnn \\
         --config configs/fft75_s1_512_bytercnn.yaml
 
-    # Override paths manually:
+    # Manual override:
     python -m src.training.sanity_train_bytercnn \\
-        --train_csv data/splits/fft75_s1_512/train.csv \\
-        --class_map data/splits/fft75_s1_512/class_map.json
+        --data_dir  data/FFT-75 \\
+        --fragment_size 512 \\
+        --epochs 2 --subset 2000
 """
 
 from __future__ import annotations
@@ -40,10 +39,8 @@ from src.data.dataset import FragmentDataset, build_dataloader
 from src.models.bytercnn_wrapper import build_bytercnn
 from src.utils.logging import get_simple_logger
 from src.utils.paths import (
-    BYTERCNN_SANITY_CKPT,
     CHECKPOINTS_DIR,
-    FFT75_CLASS_MAP,
-    FFT75_TRAIN_CSV,
+    FFT75_DATA_DIR,
     ensure_dirs,
 )
 from src.utils.seed import set_seed
@@ -55,13 +52,13 @@ SANITY_SUBSET: int = 2_000
 SANITY_EPOCHS: int = 2
 SANITY_BATCH_SIZE: int = 64
 SANITY_LR: float = 1e-3
-SANITY_LOG_EVERY: int = 5  # log every N batches
+SANITY_LOG_EVERY: int = 5
 
 logger = get_simple_logger("sanity_train")
 
 
 # ---------------------------------------------------------------------------
-# Training helpers
+# Training helper
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +70,6 @@ def _one_epoch(
     device: torch.device,
     epoch: int,
 ) -> tuple[float, float]:
-    """Train for one epoch. Returns (avg_loss, accuracy)."""
     model.train()
     total_loss = 0.0
     correct = 0
@@ -85,8 +81,6 @@ def _one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         log_probs = model(x)
-
-        # NLLLoss expects log-probabilities
         loss = criterion(log_probs, y)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -99,19 +93,13 @@ def _one_epoch(
         n_samples += bs
 
         if (batch_idx + 1) % SANITY_LOG_EVERY == 0:
-            running_acc = correct / n_samples
             logger.info(
                 "Epoch %d | Batch %d/%d | Loss %.4f | Running Acc %.4f",
-                epoch,
-                batch_idx + 1,
-                len(loader),
-                loss.item(),
-                running_acc,
+                epoch, batch_idx + 1, len(loader),
+                loss.item(), correct / n_samples,
             )
 
-    avg_loss = total_loss / n_samples
-    accuracy = correct / n_samples
-    return avg_loss, accuracy
+    return total_loss / n_samples, correct / n_samples
 
 
 # ---------------------------------------------------------------------------
@@ -121,14 +109,10 @@ def _one_epoch(
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ByteRCNN sanity training run.")
-    p.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to YAML config. If omitted, uses code defaults.",
-    )
-    p.add_argument("--train_csv", type=Path, default=None)
-    p.add_argument("--class_map", type=Path, default=None)
+    p.add_argument("--config", type=Path, default=None)
+    p.add_argument("--data_dir", type=Path, default=None,
+                   help="Path to FFT-75/ root directory.")
+    p.add_argument("--fragment_size", type=int, default=None)
     p.add_argument("--checkpoint_path", type=Path, default=None)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--subset", type=int, default=SANITY_SUBSET)
@@ -154,23 +138,29 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     cfg = _load_config(args.config)
 
-    # Merge config → args (args take priority)
+    sanity_cfg = cfg.get("sanity", {})
+    ds_cfg = cfg.get("dataset", {})
+    path_cfg = cfg.get("paths", {})
+
     seed: int = args.seed
-    subset: int = args.subset
-    epochs: int = args.epochs
-    batch_size: int = args.batch_size
-    lr: float = args.lr
+    subset: int = args.subset if args.subset != SANITY_SUBSET else sanity_cfg.get("subset_size", SANITY_SUBSET)
+    epochs: int = args.epochs if args.epochs != SANITY_EPOCHS else sanity_cfg.get("epochs", SANITY_EPOCHS)
+    batch_size: int = args.batch_size if args.batch_size != SANITY_BATCH_SIZE else sanity_cfg.get("batch_size", SANITY_BATCH_SIZE)
+    lr: float = args.lr if args.lr != SANITY_LR else sanity_cfg.get("lr", SANITY_LR)
 
-    if args.config:
-        sanity_cfg = cfg.get("sanity", {})
-        subset = args.subset if "--subset" in sys.argv else sanity_cfg.get("subset_size", subset)
-        epochs = args.epochs if "--epochs" in sys.argv else sanity_cfg.get("epochs", epochs)
-        batch_size = args.batch_size if "--batch_size" in sys.argv else sanity_cfg.get("batch_size", batch_size)
-        lr = args.lr if "--lr" in sys.argv else sanity_cfg.get("lr", lr)
-
-    train_csv: Path = args.train_csv or FFT75_TRAIN_CSV
-    class_map: Path = args.class_map or FFT75_CLASS_MAP
-    ckpt_path: Path = args.checkpoint_path or BYTERCNN_SANITY_CKPT
+    # Paths
+    data_dir: Path = (
+        args.data_dir
+        or Path(ds_cfg.get("root_dir", str(FFT75_DATA_DIR)))
+    )
+    fragment_size: int = (
+        args.fragment_size
+        or int(ds_cfg.get("fragment_size", 512))
+    )
+    ckpt_path: Path = (
+        args.checkpoint_path
+        or Path(path_cfg.get("sanity_checkpoint", str(CHECKPOINTS_DIR / "sanity_bytercnn_fft75.pt")))
+    )
 
     # ---- Setup -----------------------------------------------------------
     set_seed(seed)
@@ -184,73 +174,61 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("Epochs        : %d", epochs)
     logger.info("Batch size    : %d", batch_size)
     logger.info("Learning rate : %.5f", lr)
-    logger.info("Train CSV     : %s", train_csv)
+    logger.info("Data dir      : %s", data_dir)
+    logger.info("Fragment size : %d", fragment_size)
 
-    # ---- Data ------------------------------------------------------------
-    logger.info("Loading dataset …")
+    # ---- Dataset ---------------------------------------------------------
+    logger.info("Loading tiny_subset dataset …")
     dataset = FragmentDataset(
-        csv_path=train_csv,
-        class_map_path=class_map,
-        cache=False,
+        root_dir=data_dir,
+        split="train",
+        fragment_size=fragment_size,
+        cache=True,
         tiny_subset=subset,
     )
-    logger.info("Dataset: %s", dataset)
+    logger.info("%s", dataset)
 
-    loader = build_dataloader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=False,
-    )
+    loader = build_dataloader(dataset, batch_size=batch_size, shuffle=True)
     logger.info("DataLoader: %d batches", len(loader))
 
     # ---- Model -----------------------------------------------------------
-    model = build_bytercnn().to(device)
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info("Model loaded. Trainable parameters: %d", num_params)
+    model = build_bytercnn(num_classes=dataset.num_classes).to(device)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info("Model loaded. Trainable parameters: %d", n_params)
 
     criterion = nn.NLLLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # ---- Sanity check: single batch forward/backward --------------------
-    logger.info("--- Single-batch sanity check ---")
+    # ---- Single-batch forward check ------------------------------------
+    logger.info("--- Single-batch forward check ---")
     sample_x, sample_y = next(iter(loader))
-    sample_x = sample_x.to(device)
-    sample_y = sample_y.to(device)
+    sample_x, sample_y = sample_x.to(device), sample_y.to(device)
 
     with torch.no_grad():
         out = model(sample_x)
+
     assert out.shape == (sample_x.size(0), dataset.num_classes), (
         f"Unexpected output shape: {out.shape}"
     )
-    loss_check = criterion(out, sample_y)
+    initial_loss = criterion(out, sample_y)
     logger.info(
         "Forward OK — output shape: %s, initial loss: %.4f",
-        tuple(out.shape),
-        loss_check.item(),
+        tuple(out.shape), initial_loss.item(),
     )
 
     # ---- Training loop ---------------------------------------------------
-    logger.info("--- Starting sanity training ---")
+    logger.info("--- Sanity training (%d epochs) ---", epochs)
     t0 = time.time()
 
     for epoch in range(1, epochs + 1):
-        epoch_start = time.time()
-        avg_loss, acc = _one_epoch(
-            model, loader, optimizer, criterion, device, epoch
-        )
-        elapsed = time.time() - epoch_start
+        t_ep = time.time()
+        avg_loss, acc = _one_epoch(model, loader, optimizer, criterion, device, epoch)
         logger.info(
-            "Epoch %d/%d DONE | Avg Loss %.4f | Accuracy %.4f | %.1fs",
-            epoch,
-            epochs,
-            avg_loss,
-            acc,
-            elapsed,
+            "Epoch %d/%d | Avg Loss %.4f | Accuracy %.4f | %.1fs",
+            epoch, epochs, avg_loss, acc, time.time() - t_ep,
         )
 
-    total_time = time.time() - t0
-    logger.info("Sanity training complete in %.1fs.", total_time)
+    logger.info("Sanity training complete in %.1fs.", time.time() - t0)
 
     # ---- Save checkpoint -------------------------------------------------
     torch.save(
@@ -259,10 +237,12 @@ def main(argv: list[str] | None = None) -> None:
             "epoch": epochs,
             "sanity": True,
             "seed": seed,
+            "fragment_size": fragment_size,
+            "num_classes": dataset.num_classes,
         },
         ckpt_path,
     )
-    logger.info("Sanity checkpoint saved → %s", ckpt_path)
+    logger.info("Sanity checkpoint → %s", ckpt_path)
     logger.info("=== Sanity run PASSED ===")
 
 

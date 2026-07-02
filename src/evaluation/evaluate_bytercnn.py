@@ -3,17 +3,14 @@ src/evaluation/evaluate_bytercnn.py
 -------------------------------------
 Frozen test-set evaluation for the ByteRCNN FFT-75 Scenario #1 baseline.
 
-Outputs written to outputs/bytercnn_fft75/ (or --out_dir):
-    metrics.json          — scalar metrics (accuracy, macro P/R/F1, …)
-    confusion_matrix.csv  — full num_classes × num_classes matrix
-    per_class_metrics.csv — per-class precision, recall, F1, support
-    predictions.csv       — sample_id, true_label, pred_label, confidence
-    eval_summary.txt      — human-readable table
+Loads the official test.npz split.  Does not regenerate or modify splits.
 
-Measurement protocol:
-    1. Warm-up: 5 batches (GPU JIT / caches)
-    2. Timed inference: remaining batches
-    3. Peak GPU memory recorded after full pass
+Outputs written to outputs/bytercnn_fft75/ (or --out_dir):
+    metrics.json
+    confusion_matrix.csv
+    per_class_metrics.csv
+    predictions.csv
+    eval_summary.txt
 
 Usage
 -----
@@ -23,8 +20,8 @@ Usage
     # Manual override:
     python -m src.evaluation.evaluate_bytercnn \\
         --checkpoint checkpoints/best_bytercnn_fft75.pt \\
-        --test_csv   data/splits/fft75_s1_512/test.csv \\
-        --class_map  data/splits/fft75_s1_512/class_map.json \\
+        --data_dir   data/FFT-75 \\
+        --fragment_size 512 \\
         --out_dir    outputs/bytercnn_fft75
 """
 
@@ -53,14 +50,12 @@ from src.utils.logging import get_simple_logger
 from src.utils.paths import (
     BYTERCNN_BEST_CKPT,
     BYTERCNN_RUN_DIR,
-    FFT75_CLASS_MAP,
-    FFT75_TEST_CSV,
+    FFT75_DATA_DIR,
     ensure_dirs,
 )
 from src.utils.seed import set_seed
 
 logger = get_simple_logger("evaluate_bytercnn")
-
 WARMUP_BATCHES: int = 5
 
 
@@ -74,18 +69,8 @@ def _run_inference(
     loader: torch.utils.data.DataLoader,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
-    """Run inference with warmup batches.
-
-    Returns
-    -------
-    all_true   : shape [N]
-    all_pred   : shape [N]
-    all_conf   : shape [N]  — max softmax probability
-    time_per_sample_ms : float
-    peak_gpu_mb : float (0 if no CUDA)
-    """
+    """Warm-up then timed inference. Returns (true, pred, conf, ms/sample, peak_mb)."""
     model.eval()
-
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats(device)
 
@@ -93,21 +78,21 @@ def _run_inference(
     all_pred: list[int] = []
     all_conf: list[float] = []
 
-    # ---- Warm-up --------------------------------------------------------
-    warmed_up = 0
+    # Warm-up
+    warmed = 0
     with torch.no_grad():
-        for x, y in loader:
+        for x, _ in loader:
             x = x.to(device, non_blocking=True)
             _ = model(x)
-            warmed_up += 1
-            if warmed_up >= WARMUP_BATCHES:
+            warmed += 1
+            if warmed >= WARMUP_BATCHES:
                 break
-    logger.info("Warm-up complete (%d batches).", warmed_up)
+    logger.info("Warm-up complete (%d batches).", warmed)
 
     if torch.cuda.is_available():
         torch.cuda.synchronize(device)
 
-    # ---- Timed inference ------------------------------------------------
+    # Timed pass
     n_timed = 0
     t_start = time.perf_counter()
 
@@ -116,7 +101,6 @@ def _run_inference(
             x = x.to(device, non_blocking=True)
             log_probs = model(x)
             probs = log_probs.exp()
-
             preds = probs.argmax(dim=1)
             confs = probs.max(dim=1).values
 
@@ -128,27 +112,21 @@ def _run_inference(
     if torch.cuda.is_available():
         torch.cuda.synchronize(device)
 
-    t_end = time.perf_counter()
-
-    elapsed_s = t_end - t_start
-    time_per_sample_ms = (elapsed_s / max(n_timed, 1)) * 1000.0
-
-    if torch.cuda.is_available():
-        peak_gpu_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
-    else:
-        peak_gpu_mb = 0.0
+    elapsed = time.perf_counter() - t_start
+    time_per_ms = (elapsed / max(n_timed, 1)) * 1000.0
+    peak_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2) if torch.cuda.is_available() else 0.0
 
     return (
         np.array(all_true, dtype=np.int64),
         np.array(all_pred, dtype=np.int64),
         np.array(all_conf, dtype=np.float32),
-        time_per_sample_ms,
-        peak_gpu_mb,
+        time_per_ms,
+        peak_mb,
     )
 
 
 # ---------------------------------------------------------------------------
-# Metrics & output saving
+# Save outputs
 # ---------------------------------------------------------------------------
 
 
@@ -156,93 +134,75 @@ def _compute_and_save(
     true_labels: np.ndarray,
     pred_labels: np.ndarray,
     confidences: np.ndarray,
-    class_map: dict[str, int],
+    num_classes: int,
     time_per_sample_ms: float,
     peak_gpu_mb: float,
-    sample_ids: list[str],
     out_dir: Path,
 ) -> dict:
-    """Compute all metrics and write output files."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    id_to_label = {v: k for k, v in class_map.items()}
-    label_names = [id_to_label[i] for i in range(len(class_map))]
+    # Use integer labels as class names (no external class_map needed)
+    label_names = [str(i) for i in range(num_classes)]
+    label_ids   = list(range(num_classes))
 
     acc = accuracy_score(true_labels, pred_labels)
     prec_macro, rec_macro, f1_macro, _ = precision_recall_fscore_support(
         true_labels, pred_labels, average="macro", zero_division=0
     )
-    prec_weighted, rec_weighted, f1_weighted, _ = precision_recall_fscore_support(
+    prec_w, rec_w, f1_w, _ = precision_recall_fscore_support(
         true_labels, pred_labels, average="weighted", zero_division=0
     )
-    prec_per, rec_per, f1_per, support_per = precision_recall_fscore_support(
-        true_labels, pred_labels, average=None, zero_division=0,
-        labels=list(range(len(class_map))),
+    prec_per, rec_per, f1_per, sup_per = precision_recall_fscore_support(
+        true_labels, pred_labels, average=None, zero_division=0, labels=label_ids
     )
 
-    # ---- metrics.json ---------------------------------------------------
+    # metrics.json
     metrics = {
-        "accuracy": float(acc),
-        "macro_precision": float(prec_macro),
-        "macro_recall": float(rec_macro),
-        "macro_f1": float(f1_macro),
-        "weighted_precision": float(prec_weighted),
-        "weighted_recall": float(rec_weighted),
-        "weighted_f1": float(f1_weighted),
-        "time_per_sample_ms": float(time_per_sample_ms),
-        "peak_gpu_memory_mb": float(peak_gpu_mb),
-        "num_test_samples": int(len(true_labels)),
-        "num_classes": int(len(class_map)),
+        "accuracy":          float(acc),
+        "macro_precision":   float(prec_macro),
+        "macro_recall":      float(rec_macro),
+        "macro_f1":          float(f1_macro),
+        "weighted_precision":float(prec_w),
+        "weighted_recall":   float(rec_w),
+        "weighted_f1":       float(f1_w),
+        "time_per_sample_ms":float(time_per_sample_ms),
+        "peak_gpu_memory_mb":float(peak_gpu_mb),
+        "num_test_samples":  int(len(true_labels)),
+        "num_classes":       num_classes,
     }
-    metrics_path = out_dir / "metrics.json"
-    with open(metrics_path, "w") as f:
+    with open(out_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
-    logger.info("metrics.json → %s", metrics_path)
+    logger.info("metrics.json → %s", out_dir / "metrics.json")
 
-    # ---- confusion_matrix.csv ------------------------------------------
-    cm = confusion_matrix(true_labels, pred_labels, labels=list(range(len(class_map))))
+    # confusion_matrix.csv
+    cm = confusion_matrix(true_labels, pred_labels, labels=label_ids)
     cm_df = pd.DataFrame(cm, index=label_names, columns=label_names)
-    cm_path = out_dir / "confusion_matrix.csv"
-    cm_df.to_csv(cm_path)
-    logger.info("confusion_matrix.csv → %s", cm_path)
+    cm_df.to_csv(out_dir / "confusion_matrix.csv")
+    logger.info("confusion_matrix.csv → %s", out_dir / "confusion_matrix.csv")
 
-    # ---- per_class_metrics.csv -----------------------------------------
-    per_class_df = pd.DataFrame(
-        {
-            "label": label_names,
-            "label_id": list(range(len(class_map))),
-            "precision": prec_per,
-            "recall": rec_per,
-            "f1": f1_per,
-            "support": support_per.astype(int),
-        }
-    )
-    per_class_path = out_dir / "per_class_metrics.csv"
-    per_class_df.to_csv(per_class_path, index=False)
-    logger.info("per_class_metrics.csv → %s", per_class_path)
+    # per_class_metrics.csv
+    pc_df = pd.DataFrame({
+        "label_id":  label_ids,
+        "precision": prec_per,
+        "recall":    rec_per,
+        "f1":        f1_per,
+        "support":   sup_per.astype(int),
+    })
+    pc_df.to_csv(out_dir / "per_class_metrics.csv", index=False)
+    logger.info("per_class_metrics.csv → %s", out_dir / "per_class_metrics.csv")
 
-    # ---- predictions.csv -----------------------------------------------
-    # Truncate sample_ids to match (may differ if test split re-indexed)
-    n = len(true_labels)
-    sid_col = sample_ids[:n] if len(sample_ids) >= n else sample_ids + [""] * (n - len(sample_ids))
+    # predictions.csv
+    pred_df = pd.DataFrame({
+        "true_label_id":  true_labels,
+        "pred_label_id":  pred_labels,
+        "confidence":     confidences,
+        "correct":        (true_labels == pred_labels).astype(int),
+    })
+    pred_df.to_csv(out_dir / "predictions.csv", index=False)
+    logger.info("predictions.csv → %s", out_dir / "predictions.csv")
 
-    pred_df = pd.DataFrame(
-        {
-            "sample_id": sid_col,
-            "true_label": [id_to_label.get(t, str(t)) for t in true_labels],
-            "pred_label": [id_to_label.get(p, str(p)) for p in pred_labels],
-            "true_label_id": true_labels,
-            "pred_label_id": pred_labels,
-            "confidence": confidences,
-            "correct": (true_labels == pred_labels).astype(int),
-        }
-    )
-    pred_path = out_dir / "predictions.csv"
-    pred_df.to_csv(pred_path, index=False)
-    logger.info("predictions.csv → %s", pred_path)
-
-    # ---- eval_summary.txt ----------------------------------------------
-    summary_lines = [
+    # eval_summary.txt
+    summary = "\n".join([
         "=" * 70,
         "ByteRCNN — FFT-75 Scenario #1  (512 bytes, 75 classes)",
         "FROZEN TEST-SET EVALUATION",
@@ -251,27 +211,21 @@ def _compute_and_save(
         f"{'Macro Precision':<35} {prec_macro:.6f}",
         f"{'Macro Recall':<35} {rec_macro:.6f}",
         f"{'Macro F1':<35} {f1_macro:.6f}",
-        f"{'Weighted F1':<35} {f1_weighted:.6f}",
+        f"{'Weighted F1':<35} {f1_w:.6f}",
         "-" * 70,
         f"{'Inference time / sample (ms)':<35} {time_per_sample_ms:.4f}",
         f"{'Peak GPU memory (MB)':<35} {peak_gpu_mb:.2f}",
         f"{'Test samples':<35} {len(true_labels):,}",
-        f"{'Classes':<35} {len(class_map)}",
+        f"{'Classes':<35} {num_classes}",
         "=" * 70,
         "",
         "Per-class Classification Report:",
         "-" * 70,
-        classification_report(
-            true_labels, pred_labels,
-            target_names=label_names,
-            zero_division=0,
-        ),
-    ]
-    summary_txt = "\n".join(summary_lines)
-    summary_path = out_dir / "eval_summary.txt"
-    summary_path.write_text(summary_txt)
-    logger.info("eval_summary.txt → %s", summary_path)
-    print("\n" + summary_txt)
+        classification_report(true_labels, pred_labels, zero_division=0),
+    ])
+    (out_dir / "eval_summary.txt").write_text(summary)
+    logger.info("eval_summary.txt → %s", out_dir / "eval_summary.txt")
+    print("\n" + summary)
 
     return metrics
 
@@ -285,18 +239,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ByteRCNN evaluation on frozen test set.")
     p.add_argument("--config", type=Path, default=None)
     p.add_argument("--checkpoint", type=Path, default=None)
-    p.add_argument("--test_csv", type=Path, default=None)
-    p.add_argument("--class_map", type=Path, default=None)
+    p.add_argument("--data_dir", type=Path, default=None)
+    p.add_argument("--fragment_size", type=int, default=None)
     p.add_argument("--out_dir", type=Path, default=None)
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args(argv)
 
 
-def _load_config(config_path: Path | None) -> dict:
-    if config_path is None or not config_path.exists():
+def _load_config(path: Path | None) -> dict:
+    if path is None or not path.exists():
         return {}
-    with open(config_path) as f:
+    with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
@@ -308,38 +262,39 @@ def _load_config(config_path: Path | None) -> dict:
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     cfg = _load_config(args.config)
+
+    ds_cfg   = cfg.get("dataset", {})
     path_cfg = cfg.get("paths", {})
     eval_cfg = cfg.get("evaluation", {})
 
-    checkpoint_path: Path = (
+    checkpoint_path = (
         args.checkpoint
         or Path(path_cfg.get("best_checkpoint", str(BYTERCNN_BEST_CKPT)))
     )
-    test_csv: Path = (
-        args.test_csv
-        or Path(path_cfg.get("test_csv", str(FFT75_TEST_CSV)))
+    data_dir = (
+        args.data_dir
+        or Path(ds_cfg.get("root_dir", str(FFT75_DATA_DIR)))
     )
-    class_map_path: Path = (
-        args.class_map
-        or Path(path_cfg.get("class_map", str(FFT75_CLASS_MAP)))
+    fragment_size = (
+        args.fragment_size
+        or int(ds_cfg.get("fragment_size", 512))
     )
-    out_dir: Path = (
+    out_dir = (
         args.out_dir
         or Path(path_cfg.get("run_outputs", str(BYTERCNN_RUN_DIR)))
     )
-    batch_size: int = eval_cfg.get("batch_size", args.batch_size)
-    seed: int = args.seed
+    batch_size = eval_cfg.get("batch_size", args.batch_size)
 
-    # ---- Setup ----------------------------------------------------------
-    set_seed(seed)
+    set_seed(args.seed)
     ensure_dirs(out_dir)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("=== ByteRCNN Evaluation — FFT-75 Frozen Test Set ===")
-    logger.info("Device      : %s", device)
-    logger.info("Checkpoint  : %s", checkpoint_path)
-    logger.info("Test CSV    : %s", test_csv)
-    logger.info("Output dir  : %s", out_dir)
+    logger.info("Device        : %s", device)
+    logger.info("Checkpoint    : %s", checkpoint_path)
+    logger.info("Data dir      : %s", data_dir)
+    logger.info("Fragment size : %d", fragment_size)
+    logger.info("Output dir    : %s", out_dir)
 
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -347,56 +302,38 @@ def main(argv: list[str] | None = None) -> None:
             "Run train_bytercnn.py first."
         )
 
-    # ---- Load checkpoint & model ----------------------------------------
+    # ---- Load model -----------------------------------------------------
     ckpt = torch.load(checkpoint_path, map_location=device)
     num_classes = ckpt.get("num_classes", 75)
-
     model = build_bytercnn(num_classes=num_classes).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
+    logger.info("Checkpoint loaded. Epoch=%s  Val-acc=%.4f",
+                ckpt.get("epoch", "?"), ckpt.get("val_acc", float("nan")))
 
-    val_acc = ckpt.get("val_acc", float("nan"))
-    logger.info(
-        "Checkpoint loaded. Epoch=%s  Val-acc=%.4f",
-        ckpt.get("epoch", "?"), val_acc,
-    )
-
-    # ---- Dataset & loader -----------------------------------------------
+    # ---- Dataset --------------------------------------------------------
     test_ds = FragmentDataset(
-        csv_path=test_csv,
-        class_map_path=class_map_path,
-        cache=False,
+        root_dir=data_dir, split="test",
+        fragment_size=fragment_size, cache=True,
     )
-    logger.info("Test dataset: %s", test_ds)
-
-    test_loader = build_dataloader(
-        test_ds, batch_size=batch_size, shuffle=False, drop_last=False
-    )
-
-    sample_ids = test_ds.df["sample_id"].tolist()
+    logger.info("%s", test_ds)
+    test_loader = build_dataloader(test_ds, batch_size=batch_size, shuffle=False)
 
     # ---- Inference ------------------------------------------------------
     logger.info("Running inference (warmup=%d batches) …", WARMUP_BATCHES)
-    true_arr, pred_arr, conf_arr, time_per_ms, peak_mb = _run_inference(
-        model, test_loader, device
-    )
-    logger.info(
-        "Inference done. Time/sample=%.3f ms  Peak GPU=%.1f MB",
-        time_per_ms, peak_mb,
-    )
+    true_arr, pred_arr, conf_arr, time_ms, peak_mb = _run_inference(model, test_loader, device)
+    logger.info("Inference done. Time/sample=%.3f ms  Peak GPU=%.1f MB", time_ms, peak_mb)
 
-    # ---- Compute & save metrics -----------------------------------------
+    # ---- Metrics & save -------------------------------------------------
     _compute_and_save(
         true_labels=true_arr,
         pred_labels=pred_arr,
         confidences=conf_arr,
-        class_map=test_ds.class_map,
-        time_per_sample_ms=time_per_ms,
+        num_classes=num_classes,
+        time_per_sample_ms=time_ms,
         peak_gpu_mb=peak_mb,
-        sample_ids=sample_ids,
         out_dir=out_dir,
     )
-
     logger.info("=== Evaluation complete. Outputs in %s ===", out_dir)
 
 

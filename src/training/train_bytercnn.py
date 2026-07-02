@@ -3,39 +3,29 @@ src/training/train_bytercnn.py
 -------------------------------
 Full training script for the ByteRCNN FFT-75 Scenario #1 baseline.
 
-Key design decisions:
-  - Loads the frozen train.csv and val.csv (never splits internally).
-  - Uses NLLLoss (model outputs log-softmax).
-  - Adam / AdamW optimiser with configurable LR.
-  - Early stopping on validation accuracy (patience = 5 epochs default).
-  - Saves the best checkpoint keyed on val accuracy.
-  - Logs per-epoch metrics to a RunLogger (timestamped run dir + CSV).
-  - Saves training curves as outputs/bytercnn_fft75/training_curves.png.
+Loads the official pre-split NPZ files — no CSV generation, no split logic.
 
 Usage
 -----
-    # From repo root (reads all settings from YAML):
     python -m src.training.train_bytercnn \\
         --config configs/fft75_s1_512_bytercnn.yaml
 
     # Manual override:
     python -m src.training.train_bytercnn \\
-        --train_csv data/splits/fft75_s1_512/train.csv \\
-        --val_csv   data/splits/fft75_s1_512/val.csv \\
-        --class_map data/splits/fft75_s1_512/class_map.json \\
+        --data_dir  data/FFT-75 \\
+        --fragment_size 512 \\
         --epochs 30 --batch_size 256 --lr 1e-3 --patience 5
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend for server environments
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -48,9 +38,7 @@ from src.utils.paths import (
     BYTERCNN_BEST_CKPT,
     BYTERCNN_RUN_DIR,
     CHECKPOINTS_DIR,
-    FFT75_CLASS_MAP,
-    FFT75_TRAIN_CSV,
-    FFT75_VAL_CSV,
+    FFT75_DATA_DIR,
     LOGS_DIR,
     OUTPUTS_DIR,
     ensure_dirs,
@@ -70,19 +58,14 @@ _DEFAULTS = {
     "patience": 5,
     "grad_clip": 1.0,
     "dropout": 0.5,
-    "num_workers": None,      # auto-detect
-    "cache_dataset": False,
+    "fragment_size": 512,
+    "cache": True,
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _accuracy(log_probs: torch.Tensor, targets: torch.Tensor) -> float:
-    preds = log_probs.argmax(dim=1)
-    return (preds == targets).float().mean().item()
 
 
 def _run_epoch(
@@ -93,11 +76,7 @@ def _run_epoch(
     optimizer: Optional[torch.optim.Optimizer] = None,
     grad_clip: float = 0.0,
 ) -> tuple[float, float]:
-    """Run one training or evaluation epoch.
-
-    If *optimizer* is None, runs in eval mode with no_grad.
-    Returns (avg_loss, accuracy).
-    """
+    """One training or evaluation epoch. Returns (avg_loss, accuracy)."""
     is_train = optimizer is not None
     model.train(is_train)
     context = torch.enable_grad() if is_train else torch.no_grad()
@@ -136,7 +115,6 @@ def _save_curves(
     val_accs: list[float],
     out_dir: Path,
 ) -> None:
-    """Save training/validation curves as a PNG."""
     out_dir.mkdir(parents=True, exist_ok=True)
     epochs = range(1, len(train_losses) + 1)
 
@@ -171,11 +149,11 @@ def _save_curves(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="ByteRCNN full training run.")
+    p = argparse.ArgumentParser(description="ByteRCNN full training.")
     p.add_argument("--config", type=Path, default=None)
-    p.add_argument("--train_csv", type=Path, default=None)
-    p.add_argument("--val_csv", type=Path, default=None)
-    p.add_argument("--class_map", type=Path, default=None)
+    p.add_argument("--data_dir", type=Path, default=None,
+                   help="Path to FFT-75/ root directory.")
+    p.add_argument("--fragment_size", type=int, default=None)
     p.add_argument("--checkpoint_path", type=Path, default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--epochs", type=int, default=None)
@@ -185,26 +163,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--patience", type=int, default=None)
     p.add_argument("--grad_clip", type=float, default=None)
     p.add_argument("--dropout", type=float, default=None)
-    p.add_argument("--cache", action="store_true", default=False)
-    p.add_argument("--resume", type=Path, default=None,
-                   help="Path to a checkpoint to resume training from.")
+    p.add_argument("--resume", type=Path, default=None)
     return p.parse_args(argv)
 
 
-def _load_config(config_path: Path | None) -> dict:
-    if config_path is None or not config_path.exists():
+def _load_config(path: Path | None) -> dict:
+    if path is None or not path.exists():
         return {}
-    with open(config_path) as f:
+    with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
-def _resolve(args_val, cfg_val, default):
-    """Priority: CLI arg > config value > default."""
-    if args_val is not None:
-        return args_val
-    if cfg_val is not None:
-        return cfg_val
-    return default
+def _r(cli, cfg_val, default):
+    """Priority: CLI → config → default."""
+    return cli if cli is not None else (cfg_val if cfg_val is not None else default)
 
 
 # ---------------------------------------------------------------------------
@@ -217,40 +189,35 @@ def main(argv: list[str] | None = None) -> None:
     cfg = _load_config(args.config)
 
     train_cfg = cfg.get("training", {})
-    path_cfg = cfg.get("paths", {})
+    ds_cfg    = cfg.get("dataset", {})
+    path_cfg  = cfg.get("paths", {})
     model_cfg = cfg.get("model", {})
 
-    # ---- Resolve hyperparameters ----------------------------------------
-    seed: int = _resolve(args.seed, train_cfg.get("seed"), _DEFAULTS["seed"])
-    epochs: int = _resolve(args.epochs, train_cfg.get("epochs"), _DEFAULTS["epochs"])
-    batch_size: int = _resolve(args.batch_size, train_cfg.get("batch_size"), _DEFAULTS["batch_size"])
-    lr: float = _resolve(args.lr, train_cfg.get("lr"), _DEFAULTS["lr"])
-    weight_decay: float = _resolve(args.weight_decay, train_cfg.get("weight_decay"), _DEFAULTS["weight_decay"])
-    patience: int = _resolve(args.patience, train_cfg.get("patience"), _DEFAULTS["patience"])
-    grad_clip: float = _resolve(args.grad_clip, train_cfg.get("grad_clip"), _DEFAULTS["grad_clip"])
-    dropout: float = _resolve(args.dropout, model_cfg.get("dropout"), _DEFAULTS["dropout"])
-    cache: bool = args.cache or train_cfg.get("cache_dataset", _DEFAULTS["cache_dataset"])
-    num_workers: Optional[int] = train_cfg.get("num_workers", _DEFAULTS["num_workers"])
+    # Hyperparameters
+    seed         = _r(args.seed,         train_cfg.get("seed"),         _DEFAULTS["seed"])
+    epochs       = _r(args.epochs,       train_cfg.get("epochs"),       _DEFAULTS["epochs"])
+    batch_size   = _r(args.batch_size,   train_cfg.get("batch_size"),   _DEFAULTS["batch_size"])
+    lr           = _r(args.lr,           train_cfg.get("lr"),           _DEFAULTS["lr"])
+    weight_decay = _r(args.weight_decay, train_cfg.get("weight_decay"), _DEFAULTS["weight_decay"])
+    patience     = _r(args.patience,     train_cfg.get("patience"),     _DEFAULTS["patience"])
+    grad_clip    = _r(args.grad_clip,    train_cfg.get("grad_clip"),    _DEFAULTS["grad_clip"])
+    dropout      = _r(args.dropout,      model_cfg.get("dropout"),      _DEFAULTS["dropout"])
 
-    # ---- Resolve paths --------------------------------------------------
-    train_csv: Path = args.train_csv or Path(path_cfg.get("train_csv", str(FFT75_TRAIN_CSV)))
-    val_csv: Path = args.val_csv or Path(path_cfg.get("val_csv", str(FFT75_VAL_CSV)))
-    class_map: Path = args.class_map or Path(path_cfg.get("class_map", str(FFT75_CLASS_MAP)))
-    ckpt_path: Path = args.checkpoint_path or Path(path_cfg.get("best_checkpoint", str(BYTERCNN_BEST_CKPT)))
-    run_outputs: Path = Path(path_cfg.get("run_outputs", str(BYTERCNN_RUN_DIR)))
+    # Dataset
+    data_dir      = _r(args.data_dir,      Path(ds_cfg["root_dir"]) if "root_dir" in ds_cfg else None, FFT75_DATA_DIR)
+    fragment_size = _r(args.fragment_size, ds_cfg.get("fragment_size"), _DEFAULTS["fragment_size"])
+    cache         = bool(ds_cfg.get("cache", _DEFAULTS["cache"]))
+
+    # Paths
+    ckpt_path   = _r(args.checkpoint_path, Path(path_cfg["best_checkpoint"]) if "best_checkpoint" in path_cfg else None, BYTERCNN_BEST_CKPT)
+    run_outputs = Path(path_cfg.get("run_outputs", str(BYTERCNN_RUN_DIR)))
 
     # ---- Setup ----------------------------------------------------------
     set_seed(seed)
     ensure_dirs(CHECKPOINTS_DIR, LOGS_DIR, run_outputs)
 
-    run_logger = RunLogger(
-        run_name="bytercnn_fft75",
-        base_dir=LOGS_DIR,
-        config_path=args.config,
-    )
-    run_logger.info("=== ByteRCNN Full Training — FFT-75 S1 512B ===")
-    run_logger.info("Seed=%d  Epochs=%d  BS=%d  LR=%.5f  Patience=%d",
-                    seed, epochs, batch_size, lr, patience)
+    run_logger = RunLogger(run_name="bytercnn_fft75", base_dir=LOGS_DIR, config_path=args.config)
+    run_logger.info("=== ByteRCNN Full Training — FFT-75 S1 fragment_size=%d ===", fragment_size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run_logger.info("Device: %s", device)
@@ -259,47 +226,28 @@ def main(argv: list[str] | None = None) -> None:
 
     # ---- Datasets -------------------------------------------------------
     run_logger.info("Loading train dataset …")
-    train_ds = FragmentDataset(
-        csv_path=train_csv,
-        class_map_path=class_map,
-        cache=cache,
-    )
-    run_logger.info("Train: %s", train_ds)
+    train_ds = FragmentDataset(root_dir=data_dir, split="train", fragment_size=fragment_size, cache=cache)
+    run_logger.info("%s", train_ds)
 
     run_logger.info("Loading val dataset …")
-    val_ds = FragmentDataset(
-        csv_path=val_csv,
-        class_map_path=class_map,
-        cache=cache,
-    )
-    run_logger.info("Val  : %s", val_ds)
+    val_ds = FragmentDataset(root_dir=data_dir, split="val", fragment_size=fragment_size, cache=cache)
+    run_logger.info("%s", val_ds)
 
-    train_loader = build_dataloader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, drop_last=True,
-    )
-    val_loader = build_dataloader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, drop_last=False,
-    )
+    train_loader = build_dataloader(train_ds, batch_size=batch_size, shuffle=True,  drop_last=True)
+    val_loader   = build_dataloader(val_ds,   batch_size=batch_size, shuffle=False, drop_last=False)
 
     # ---- Model ----------------------------------------------------------
-    model = build_bytercnn(
-        num_classes=train_ds.num_classes,
-        dropout=dropout,
-    ).to(device)
+    model = build_bytercnn(num_classes=train_ds.num_classes, dropout=dropout).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    run_logger.info("Model: ByteRCNN | Params: %d", n_params)
+    run_logger.info("ByteRCNN | classes=%d | params=%d", train_ds.num_classes, n_params)
 
     criterion = nn.NLLLoss()
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=lr, weight_decay=weight_decay
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=2, verbose=True
+        optimizer, mode="max", factor=0.5, patience=2
     )
 
-    # ---- Resume from checkpoint (optional) ------------------------------
+    # ---- Resume ---------------------------------------------------------
     start_epoch = 1
     if args.resume and args.resume.exists():
         ckpt = torch.load(args.resume, map_location=device)
@@ -312,78 +260,46 @@ def main(argv: list[str] | None = None) -> None:
     # ---- Training loop --------------------------------------------------
     best_val_acc = -1.0
     epochs_no_improve = 0
-
-    train_losses, val_losses = [], []
-    train_accs, val_accs = [], []
-
-    run_logger.info("Starting training …")
+    train_losses, val_losses, train_accs, val_accs = [], [], [], []
 
     for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
-
-        tr_loss, tr_acc = _run_epoch(
-            model, train_loader, criterion, device,
-            optimizer=optimizer, grad_clip=grad_clip,
-        )
-        va_loss, va_acc = _run_epoch(
-            model, val_loader, criterion, device,
-        )
-
+        tr_loss, tr_acc = _run_epoch(model, train_loader, criterion, device, optimizer, grad_clip)
+        va_loss, va_acc = _run_epoch(model, val_loader,   criterion, device)
         elapsed = time.time() - t0
+
         scheduler.step(va_acc)
+        train_losses.append(tr_loss); val_losses.append(va_loss)
+        train_accs.append(tr_acc);   val_accs.append(va_acc)
 
-        train_losses.append(tr_loss)
-        val_losses.append(va_loss)
-        train_accs.append(tr_acc)
-        val_accs.append(va_acc)
+        run_logger.log_epoch(epoch, {
+            "train_loss": tr_loss, "val_loss": va_loss,
+            "train_acc":  tr_acc,  "val_acc":  va_acc,
+            "lr": optimizer.param_groups[0]["lr"],
+            "epoch_time_s": elapsed,
+        })
 
-        run_logger.log_epoch(
-            epoch,
-            {
-                "train_loss": tr_loss,
-                "val_loss": va_loss,
-                "train_acc": tr_acc,
-                "val_acc": va_acc,
-                "lr": optimizer.param_groups[0]["lr"],
-                "epoch_time_s": elapsed,
-            },
-        )
-
-        # Best checkpoint
         if va_acc > best_val_acc:
             best_val_acc = va_acc
             epochs_no_improve = 0
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "val_acc": va_acc,
-                    "val_loss": va_loss,
-                    "seed": seed,
-                    "num_classes": train_ds.num_classes,
-                },
-                ckpt_path,
-            )
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_acc": va_acc, "val_loss": va_loss,
+                "seed": seed, "num_classes": train_ds.num_classes,
+                "fragment_size": fragment_size,
+            }, ckpt_path)
             run_logger.info("  ★ New best val_acc=%.4f → checkpoint saved.", va_acc)
         else:
             epochs_no_improve += 1
-            run_logger.info(
-                "  No improvement (%d/%d epochs patience).",
-                epochs_no_improve, patience,
-            )
+            run_logger.info("  No improvement (%d/%d patience).", epochs_no_improve, patience)
 
-        # Early stopping
         if epochs_no_improve >= patience:
-            run_logger.info(
-                "Early stopping triggered at epoch %d (best val_acc=%.4f).",
-                epoch, best_val_acc,
-            )
+            run_logger.info("Early stopping at epoch %d (best val_acc=%.4f).", epoch, best_val_acc)
             break
 
-    # ---- Save curves ----------------------------------------------------
     _save_curves(train_losses, val_losses, train_accs, val_accs, run_outputs)
-
     run_logger.info("=== Training complete. Best val_acc=%.4f ===", best_val_acc)
     run_logger.info("Best checkpoint → %s", ckpt_path)
     run_logger.close()
