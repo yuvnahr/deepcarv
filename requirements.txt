@@ -1,0 +1,50 @@
+# Core
+numpy>=1.26
+pandas>=2.2
+scipy>=1.13
+
+# Deep Learning
+torch
+torchvision
+torchaudio
+
+# Vision Models
+timm>=1.0.0
+
+# Machine Learning
+scikit-learn>=1.5
+
+# Progress Bars
+tqdm>=4.66
+
+# Images
+Pillow>=10.3
+
+# Plotting
+matplotlib>=3.9
+
+# Config
+PyYAML>=6.0
+
+# Utilities
+requests>=2.32
+psutil>=6.0
+
+# Logging
+tensorboard>=2.17
+
+# Metrics
+torchmetrics>=1.4
+
+# Optional notebook support
+jupyter
+ipykernel
+
+# Optional augmentation
+albumentations>=1.4
+
+# Optional model summary
+torchinfo
+
+# Optional experiment tracking
+wandb
