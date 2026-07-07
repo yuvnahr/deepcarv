@@ -1,0 +1,64 @@
+name: DeepCarv CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - bench-frame
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lightweight dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyyaml numpy pandas torch scikit-learn matplotlib psutil ruff mypy
+
+      - name: Lint research infrastructure
+        run: |
+          python -m ruff check \
+            src/experiment_db \
+            src/research \
+            src/compatibility.py \
+            src/profiler.py \
+            scripts/repo_check.py \
+            tests/test_research_infra.py
+
+      - name: Type-check research infrastructure
+        run: |
+          python -m mypy --ignore-missing-imports \
+            src/experiment_db \
+            src/research \
+            src/compatibility.py \
+            src/profiler.py \
+            scripts/repo_check.py
+
+      - name: Verify imports
+        run: |
+          python - <<'PY'
+          import src.compatibility
+          import src.experiment_db
+          import src.profiler
+          import src.research.metadata
+          from src.models.registry import list_models
+          assert "bytercnn" in list_models()
+          PY
+
+      - name: Validate configs and repository health
+        run: python scripts/repo_check.py
+
+      - name: Run lightweight smoke tests
+        run: |
+          python -m pytest \
+            tests/test_config.py \
+            tests/test_registry.py \
+            tests/test_dataset_tools.py \
+            tests/test_research_infra.py

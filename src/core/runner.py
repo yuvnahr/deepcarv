@@ -23,11 +23,14 @@ import logging
 from pathlib import Path
 
 from src.core.experiment_manager import ExperimentManager
+from src.dataset_tools.fingerprint import write_dataset_fingerprint
 from src.data.dataset_factory import build_dataloaders, build_datasets
 from src.evaluation.evaluator import Evaluator
 from src.models.registry import build_model
+from src.profiler import PerformanceProfile, save_performance_profile
 from src.training.trainer import Trainer, TrainerConfig
 from src.utils.config import load_experiment_config
+from src.utils.paths import REPO_ROOT
 from src.utils.paths import OUTPUTS_DIR
 from src.visualization.confusion import plot_confusion_matrix
 from src.visualization.plots import plot_accuracy_curve, plot_loss_curve, plot_lr_curve
@@ -68,6 +71,19 @@ def run_experiment(
         # ---- Train ---------------------------------------------------------
         trainer_cfg = TrainerConfig.from_dict(config.training)
         trainer = Trainer(model, trainer_cfg, run_dir)
+        dataset_root = Path(config.dataset.get("root_dir", ""))
+        if dataset_root and not dataset_root.is_absolute():
+            dataset_root = REPO_ROOT / dataset_root
+        try:
+            fingerprint = write_dataset_fingerprint(
+                dataset_root,
+                int(config.dataset["fragment_size"]),
+                run_dir / "dataset_fingerprint.json",
+                fft75_version=str(config.dataset.get("version", "unknown")),
+            )
+            trainer.checkpoint_metadata_extra["dataset_fingerprint"] = fingerprint.to_dict()
+        except Exception as exc:
+            logger.warning("Dataset fingerprint generation skipped: %s", exc)
         history = trainer.fit(loaders["train"], loaders["val"])
 
         # ---- Plots -----------------------------------------------------------
@@ -81,6 +97,25 @@ def run_experiment(
 
         evaluator = Evaluator(model, device=trainer_cfg.device)
         result = evaluator.evaluate_and_save(loaders["test"], run_dir, run_name=exp.run_name)
+        total_train_time = float(sum(history.epoch_time_s))
+        total_train_samples = len(datasets["train"]) * max(len(history.epoch_time_s), 1)
+        save_performance_profile(
+            PerformanceProfile(
+                training_throughput_samples_s=total_train_samples / total_train_time
+                if total_train_time > 0
+                else None,
+                inference_throughput_samples_s=1000.0 / result["latency_ms_per_sample"]
+                if result["latency_ms_per_sample"]
+                else None,
+                peak_gpu_memory_mb=result["peak_gpu_memory_mb"],
+                samples_per_sec=total_train_samples / total_train_time
+                if total_train_time > 0
+                else None,
+                time_per_epoch_s=total_train_time / max(len(history.epoch_time_s), 1),
+                parameter_count=model.num_parameters(),
+            ),
+            run_dir / "performance.json",
+        )
 
         plot_confusion_matrix(result["metrics"].confusion, run_dir / "confusion_matrix.png")
 

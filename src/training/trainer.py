@@ -132,6 +132,11 @@ class Trainer:
         self.history = TrainingHistory()
         self._best_metric: float | None = None
         self.best_epoch: int = 0
+        self.checkpoint_metadata_extra: dict[str, Any] = {
+            "optimizer": config.optimizer,
+            "scheduler": config.scheduler,
+            "training_config": config.__dict__,
+        }
 
     # ------------------------------------------------------------------
     # Core loops
@@ -198,7 +203,11 @@ class Trainer:
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    monitor_value = val_result.accuracy if self.config.monitor == "val_acc" else val_result.loss
+                    monitor_value = (
+                        val_result.accuracy
+                        if self.config.monitor == "val_acc"
+                        else val_result.loss
+                    )
                     self.scheduler.step(monitor_value)
                 else:
                     self.scheduler.step()
@@ -231,13 +240,27 @@ class Trainer:
                 self.best_epoch = epoch
                 save_checkpoint(
                     self.best_ckpt_path, self.model, self.optimizer, epoch, metrics,
-                    extra={"num_classes": getattr(self.model, "num_classes", None)},
+                    extra={
+                        "num_classes": getattr(self.model, "num_classes", None),
+                        "parameter_count": self.model.num_parameters()
+                        if hasattr(self.model, "num_parameters")
+                        else None,
+                        "best_validation_score": monitor_value,
+                        **self.checkpoint_metadata_extra,
+                    },
                 )
                 logger.info("  -> new best (%s=%.4f), checkpoint saved.", self.config.monitor, monitor_value)
 
             save_checkpoint(
                 self.last_ckpt_path, self.model, self.optimizer, epoch, metrics,
-                extra={"num_classes": getattr(self.model, "num_classes", None)},
+                extra={
+                    "num_classes": getattr(self.model, "num_classes", None),
+                    "parameter_count": self.model.num_parameters()
+                    if hasattr(self.model, "num_parameters")
+                    else None,
+                    "best_validation_score": self._best_metric,
+                    **self.checkpoint_metadata_extra,
+                },
             )
 
             if on_epoch_end is not None:

@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from src.utils.config_validation import validate_experiment_dict
 from src.utils.paths import CONFIGS_DIR
 
 
@@ -163,6 +164,14 @@ def load_experiment_config(
 
     if overrides:
         cfg = apply_dotted_overrides(cfg, overrides)
+
+    validation = validate_experiment_dict(cfg.to_dict())
+    if not validation.ok:
+        raise ConfigError("\n".join(validation.errors))
+    if "learning_rate" in cfg.training and "lr" not in cfg.training:
+        cfg.training["lr"] = cfg.training["learning_rate"]
+    elif "lr" in cfg.training and "learning_rate" not in cfg.training:
+        cfg.training["learning_rate"] = cfg.training["lr"]
 
     return cfg
 
