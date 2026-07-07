@@ -42,7 +42,7 @@ import numpy as np
 import yaml
 
 SPLITS = ("train", "val", "test")
-REQUIRED_KEYS = {"X", "y"}
+REQUIRED_KEYS = {"x", "y"}
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def _verify_npz(npz_path: Path, fragment_size: int, split_name: str) -> dict:
             f"    ✗ {npz_path.name} has keys {actual_keys}, expected {REQUIRED_KEYS}"
         )
 
-    X = data["X"]
+    X = data["x"]
     y = data["y"]
 
     # Shape checks

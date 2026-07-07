@@ -107,13 +107,13 @@ class FragmentDataset(Dataset):
 
         # ---- Load arrays -------------------------------------------------
         data = np.load(str(npz_path))
-        if set(data.files) != {"X", "y"}:
+        if set(data.files) != {"x", "y"}:
             raise ValueError(
                 f"{npz_path.name} must contain exactly keys ['X', 'y'], "
                 f"got {data.files}"
             )
 
-        X: np.ndarray = data["X"]
+        X: np.ndarray = data["x"]
         y: np.ndarray = data["y"]
 
         if X.ndim != 2 or X.shape[1] != fragment_size:

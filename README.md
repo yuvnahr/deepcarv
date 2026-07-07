@@ -26,7 +26,7 @@ deepcarv/
 │   └── kaggle_bytercnn_fft75.ipynb  ← top-to-bottom Kaggle workflow
 ├── src/
 │   ├── data/
-│   │   ├── build_fft75_split.py     ← builds frozen train/val/test CSVs
+│   │   ├── verify_dataset.py         ← verifies the official NPZ benchmark files
 │   │   └── dataset.py               ← FragmentDataset (PyTorch)
 │   ├── models/
 │   │   └── bytercnn_wrapper.py      ← full PyTorch reimplementation
@@ -111,26 +111,23 @@ data/raw/
     ...
 ```
 
-Both layouts are auto-detected by `build_fft75_split.py`.
-
 ---
 
 ## Running the Benchmark
 
 All scripts below read from `configs/fft75_s1_512_bytercnn.yaml` by default.
 
-### 1. Build the Frozen Split
+### 1. Verify the Dataset
 
 ```bash
-python -m src.data.build_fft75_split \
-    --raw_dir   data/raw \
-    --splits_dir data/splits
+python -m src.data.verify_dataset \
+    --data_dir  data/FFT-75 \
+    --fragment_size 512
 ```
 
-Writes to `data/splits/fft75_s1_512/`:  
-`train.csv`, `val.csv`, `test.csv`, `class_map.json`, `manifest.json`
-
-> **Do not re-run with a different seed.** The split is frozen at seed=42.
+Checks that `FFT-75/512/train.npz`, `val.npz`, and `test.npz` exist, contain
+keys `X` and `y`, and that fragment shapes match the config.  
+Writes nothing — read-only.
 
 ### 2. Sanity Check (fast, no GPU required)
 
