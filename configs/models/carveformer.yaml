@@ -1,0 +1,6 @@
+# configs/models/carveformer.yaml
+# STUB — CarveFormer is registered but not implemented yet.
+# Resolves via src/models/adapters/carveformer_adapter.py, which raises
+# NotImplementedError on instantiation. Fill in real hyperparameters here
+# once the model is implemented.
+name: carveformer

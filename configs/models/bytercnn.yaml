@@ -1,0 +1,6 @@
+# configs/models/bytercnn.yaml
+# Registry key must be "bytercnn" (matches src/models/registry.py).
+# Architecture hyperparameters are FROZEN for the benchmark — see
+# src/models/bytercnn_wrapper.py. Leave at defaults for benchmark runs.
+name: bytercnn
+dropout: 0.5

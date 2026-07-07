@@ -1,0 +1,4 @@
+# configs/evaluation/benchmark.yaml
+batch_size: 256
+warmup_batches: 5
+top_k: [1, 5]
