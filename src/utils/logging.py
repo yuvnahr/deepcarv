@@ -19,7 +19,6 @@ from __future__ import annotations
 import csv
 import json
 import logging
-import os
 import shutil
 import sys
 from datetime import datetime
@@ -66,7 +65,7 @@ class RunLogger:
         self._epoch_csv_path = self.run_dir / "metrics_per_epoch.csv"
         self._epoch_csv_initialized = False
         self._epoch_writer: csv.DictWriter | None = None
-        self._epoch_file = None
+        self._epoch_file: Any = None
 
         # Optionally snapshot the config YAML
         if config_path is not None:

@@ -53,6 +53,10 @@ pytest>=8.0
 # Markdown table rendering for benchmark reports
 tabulate>=0.9
 
+# Development & Quality Assurance
+ruff>=0.4.0
+mypy>=1.10.0
+
 # Optional: model summary
 # torchinfo already listed above
 

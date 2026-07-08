@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from src.data.dataset_factory import build_dataloaders, build_datasets
 from src.models.registry import build_model

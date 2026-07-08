@@ -27,7 +27,7 @@ _STYLE = {
 
 
 def _apply_style() -> None:
-    plt.rcParams.update(_STYLE)
+    plt.rcParams.update(_STYLE)  # type: ignore[arg-type]
 
 
 def plot_loss_curve(train_loss: list[float], val_loss: list[float], out_path: Path, title: str = "Loss per Epoch") -> Path:
