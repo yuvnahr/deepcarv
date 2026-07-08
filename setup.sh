@@ -113,8 +113,8 @@ echo "To activate the venv later:"
 echo "  source venv/bin/activate"
 echo
 echo "Quick-start commands:"
-echo "  # 1. Build frozen split (after downloading dataset):"
-echo "  python -m src.data.build_fft75_split --raw_dir data/raw --splits_dir data/splits"
+echo "  # 1. Verify dataset (after downloading + unzipping):"
+echo "  python -m src.data.verify_dataset --data_dir data/FFT-75 --fragment_size 512"
 echo
 echo "  # 2. Sanity check:"
 echo "  python -m src.training.sanity_train_bytercnn --config configs/fft75_s1_512_bytercnn.yaml"
