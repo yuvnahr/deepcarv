@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.dataset_tools.io import ensure_output_dir, to_jsonable, write_json
+from src.dataset_tools.io import ensure_output_dir, write_json
 from src.dataset_tools.plots import generate_all_plots
 from src.dataset_tools.statistics import DatasetStatistics, compute_dataset_statistics
 from src.dataset_tools.validator import DatasetValidationResult, validate_dataset

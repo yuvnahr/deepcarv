@@ -90,24 +90,24 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.command == "inspect":
-        result = inspect_npz(args.path)
+        inspection_result = inspect_npz(args.path)
         if args.json:
-            _emit(result, True)
+            _emit(inspection_result, True)
         else:
-            _print_inspection(result)
-        return 0 if result.ok else 1
+            _print_inspection(inspection_result)
+        return 0 if inspection_result.ok else 1
 
     if args.command == "validate":
-        result = validate_dataset(args.root, args.fragment_size)
+        validation_result = validate_dataset(args.root, args.fragment_size)
         if args.json:
-            _emit(result, True)
+            _emit(validation_result, True)
         else:
-            LOGGER.info("Validation %s", "PASSED" if result.ok else "FAILED")
-            for warning in result.warnings:
+            LOGGER.info("Validation %s", "PASSED" if validation_result.ok else "FAILED")
+            for warning in validation_result.warnings:
                 LOGGER.warning(warning)
-            for error in result.errors:
+            for error in validation_result.errors:
                 LOGGER.error(error)
-        return 0 if result.ok else 1
+        return 0 if validation_result.ok else 1
 
     if args.command == "analyze":
         validation = validate_dataset(args.root, args.fragment_size)

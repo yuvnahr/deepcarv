@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from typing import Any
 
 from src.core.experiment_manager import ExperimentManager
 from src.dataset_tools.fingerprint import write_dataset_fingerprint
@@ -151,7 +152,8 @@ def _parse_overrides(raw: list[str]) -> dict:
     for item in raw:
         if "=" not in item:
             raise ValueError(f"Invalid --override '{item}', expected key.path=value")
-        key, value = item.split("=", 1)
+        key, value_str = item.split("=", 1)
+        value: Any = value_str
         # Best-effort type coercion
         for cast in (int, float):
             try:

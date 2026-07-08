@@ -15,13 +15,13 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.core.interfaces import EpochResult
+from src.core.interfaces import EpochResult, FragmentClassifier
 from src.training.callbacks import EarlyStopping
 from src.training.checkpointing import load_checkpoint, resume_epoch, save_checkpoint
 from src.utils.device import get_device
@@ -41,7 +41,7 @@ class TrainerConfig:
     grad_clip: float = 1.0
     patience: int = 5
     monitor: str = "val_acc"
-    monitor_mode: str = "max"
+    monitor_mode: Literal["min", "max"] = "max"
     amp: bool = True
     device: str | None = None  # "cuda" | "cpu" | "auto"
     seed: int = 42
@@ -104,12 +104,12 @@ class Trainer:
 
     def __init__(
         self,
-        model: nn.Module,
+        model: FragmentClassifier,
         config: TrainerConfig,
         run_dir: Path,
         callbacks: list | None = None,
     ) -> None:
-        self.model = model
+        self.model: FragmentClassifier = model
         self.config = config
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)

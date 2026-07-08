@@ -35,7 +35,7 @@ def estimate_nbytes(*arrays: np.ndarray) -> int:
 
 def to_jsonable(value: Any) -> Any:
     """Convert dataclasses, NumPy values, and paths into JSON-safe objects."""
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return to_jsonable(asdict(value))
     if isinstance(value, dict):
         return {str(key): to_jsonable(item) for key, item in value.items()}

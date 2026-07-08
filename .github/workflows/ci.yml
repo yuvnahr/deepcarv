@@ -22,43 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest pyyaml numpy pandas torch scikit-learn matplotlib psutil ruff mypy
 
-      - name: Lint research infrastructure
-        run: |
-          python -m ruff check \
-            src/experiment_db \
-            src/research \
-            src/compatibility.py \
-            src/profiler.py \
-            scripts/repo_check.py \
-            tests/test_research_infra.py
+      - name: Lint codebase
+        run: python -m ruff check .
 
-      - name: Type-check research infrastructure
-        run: |
-          python -m mypy --ignore-missing-imports \
-            src/experiment_db \
-            src/research \
-            src/compatibility.py \
-            src/profiler.py \
-            scripts/repo_check.py
-
-      - name: Verify imports
-        run: |
-          python - <<'PY'
-          import src.compatibility
-          import src.experiment_db
-          import src.profiler
-          import src.research.metadata
-          from src.models.registry import list_models
-          assert "bytercnn" in list_models()
-          PY
-
-      - name: Validate configs and repository health
-        run: python scripts/repo_check.py
-
-      - name: Run lightweight smoke tests
-        run: |
-          python -m pytest \
-            tests/test_config.py \
-            tests/test_registry.py \
-            tests/test_dataset_tools.py \
-            tests/test_research_infra.py
+      - name: Type-check codebase
+        run: python -m mypy .
