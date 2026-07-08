@@ -1,0 +1,10 @@
+exclude = [
+    ".git",
+    "venv",
+    ".mypy_cache",
+    ".ruff_cache",
+    "benchmarks",
+]
+
+[lint.per-file-ignores]
+"*.ipynb" = ["E402"]

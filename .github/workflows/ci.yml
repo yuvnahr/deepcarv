@@ -1,0 +1,29 @@
+name: DeepCarv CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - bench-frame
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lightweight dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyyaml numpy pandas torch scikit-learn matplotlib psutil ruff mypy
+
+      - name: Lint codebase
+        run: python -m ruff check .
+
+      - name: Type-check codebase
+        run: python -m mypy .

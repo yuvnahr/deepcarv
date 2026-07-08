@@ -1,16 +1,22 @@
-# DeepCarv — ByteRCNN FFT-75 Baseline
+# DeepCarv — Model-Agnostic File-Fragment Classification Benchmark
 
-Reproducible baseline implementation of **ByteRCNN** on the
-**FFT-75 Scenario #1** file-fragment classification benchmark.
+Reproducible benchmark framework for file-fragment classification and
+carving models. The **ByteRCNN** baseline on **FFT-75 Scenario #1** is the
+first model registered in the framework; CarveFormer, ByteNet, Depthwise
+CNNs, Hierarchical CNNs, and DeepCarv are intended to plug into the same
+trainer/evaluator without any workflow changes.
 
 | Setting | Value |
 |---|---|
-| Dataset | FFT-75 (75 file types) |
+| Dataset | FFT-75 (75 file types), pre-split NPZ (`train.npz`/`val.npz`/`test.npz`) |
 | Scenario | #1 (all 75 classes) |
-| Fragment length | 512 bytes |
-| Split | 80 / 10 / 10 (train / val / test) |
-| Random seed | **42** (frozen) |
-| Model | ByteRCNN (PyTorch reimplementation) |
+| Fragment length | 512 or 4096 bytes (config-selectable) |
+| Random seed | **42** (frozen for the benchmark) |
+| Baseline model | ByteRCNN (PyTorch reimplementation) |
+
+See **[docs/architecture.md](docs/architecture.md)** for how the framework
+is put together, or jump straight to
+**[docs/benchmark.md](docs/benchmark.md)** to run something.
 
 ---
 
@@ -19,33 +25,35 @@ Reproducible baseline implementation of **ByteRCNN** on the
 ```
 deepcarv/
 ├── benchmarks/
-│   └── ByteRCNN/             ← reference submodule (Keras, not used directly)
-├── configs/
-│   └── fft75_s1_512_bytercnn.yaml   ← canonical frozen config
-├── notebooks/
-│   └── kaggle_bytercnn_fft75.ipynb  ← top-to-bottom Kaggle workflow
+│   └── ByteRCNN/                     ← frozen reference submodule (read-only)
+├── configs/                          ← composable YAML configs
+│   ├── datasets/                     ← fft75_512.yaml, fft75_4096.yaml, ...
+│   ├── models/                       ← bytercnn.yaml, carveformer.yaml (stub), ...
+│   ├── training/                     ← default.yaml
+│   ├── evaluation/                   ← benchmark.yaml
+│   └── experiments/                  ← composes the above into one run
 ├── src/
-│   ├── data/
-│   │   ├── verify_dataset.py         ← verifies the official NPZ benchmark files
-│   │   └── dataset.py               ← FragmentDataset (PyTorch)
+│   ├── core/                         ← interfaces, experiment_manager, runner (entrypoint)
+│   ├── data/                         ← npz_dataset, dataset_factory, validators
 │   ├── models/
-│   │   └── bytercnn_wrapper.py      ← full PyTorch reimplementation
-│   ├── training/
-│   │   ├── sanity_train_bytercnn.py ← 2-epoch sanity run
-│   │   └── train_bytercnn.py        ← full training with early stopping
-│   ├── evaluation/
-│   │   └── evaluate_bytercnn.py     ← frozen test-set evaluation
-│   └── utils/
-│       ├── seed.py                  ← set_seed(42)
-│       ├── logging.py               ← RunLogger
-│       └── paths.py                 ← canonical path resolution
+│   │   ├── registry.py               ← MODEL_REGISTRY — the only place models are built
+│   │   ├── bytercnn_wrapper.py       ← PyTorch ByteRCNN implementation
+│   │   └── adapters/                 ← bytercnn (real), carveformer/bytenet/deepcarv (stubs)
+│   ├── training/                     ← generic trainer, callbacks, checkpointing
+│   ├── evaluation/                   ← evaluator, metrics, comparison, reporting
+│   ├── visualization/                ← plots, confusion matrix rendering
+│   └── utils/                        ← config, device, environment, logging, seed, paths, statistics
+├── datasets/ logs/ models/ outputs/ results/ cache/ checkpoints/   ← runtime data (gitignored where noted)
+├── docs/                             ← benchmark.md, configuration.md, training.md, evaluation.md, architecture.md
+├── tests/                            ← smoke tests (config, dataset, registry, trainer, evaluator)
+├── notebooks/
+│   └── kaggle_bytercnn_fft75.ipynb   ← Kaggle workflow
 ├── requirements.txt
-├── setup.sh
-├── setup.ps1
+├── setup.sh / setup.ps1
 └── README.md
 ```
 
----
+
 
 ## Prerequisites
 
@@ -78,102 +86,98 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 The dataset lives on **Google Drive** and is never committed to this repo.
 
-### Step 1 — Download
+The framework consumes the **already pre-split** FFT-75 NPZ files directly —
+it does not generate splits or read CSVs. Expected layout after download:
+
+```
+data/FFT-75/
+├── 512/
+│   ├── train.npz   # {"X": [N, 512] uint8, "y": [N] int}
+│   ├── val.npz
+│   └── test.npz
+└── 4096/
+    ├── train.npz
+    ├── val.npz
+    └── test.npz
+```
 
 ```bash
 pip install gdown
 gdown YOUR_GDRIVE_FILE_ID -O data/FFT-75.zip
-# If it's a folder:
-# gdown --folder YOUR_GDRIVE_FOLDER_ID -O data/raw/
+unzip data/FFT-75.zip -d data/
 ```
 
-### Step 2 — Unpack
-
-```bash
-unzip data/FFT-75.zip -d data/raw/
-```
-
-Expected layout after unpacking (class-per-subfolder):
-```
-data/raw/
-    pdf/
-        fragment_000001.bin   # exactly 512 bytes each
-        ...
-    exe/
-    ...
-```
-
-Or flat (filename encodes class):
-```
-data/raw/
-    pdf_000001.bin
-    exe_000042.bin
-    ...
-```
+Point `configs/datasets/fft75_512.yaml` (`root_dir`) at wherever you unpack
+this if it isn't `data/FFT-75`. Switching between 512- and 4096-byte
+fragments is a config change (`fft75_512` → `fft75_4096`), never a code
+change. See **[docs/configuration.md](docs/configuration.md)** for details.
 
 ---
 
 ## Running the Benchmark
 
-All scripts below read from `configs/fft75_s1_512_bytercnn.yaml` by default.
+Everything runs through the single unified entrypoint,
+`src.core.runner`, which composes a config, builds the dataset, builds
+the model via the registry, trains, evaluates, and writes all outputs.
+There is no per-model script.
 
-### 1. Verify the Dataset
-
-```bash
-python -m src.data.verify_dataset \
-    --data_dir  data/FFT-75 \
-    --fragment_size 512
-```
-
-Checks that `FFT-75/512/train.npz`, `val.npz`, and `test.npz` exist, contain
-keys `X` and `y`, and that fragment shapes match the config.  
-Writes nothing — read-only.
-
-### 2. Sanity Check (fast, no GPU required)
+### 1. Smoke test (no GPU, no full dataset required)
 
 ```bash
-python -m src.training.sanity_train_bytercnn \
-    --config configs/fft75_s1_512_bytercnn.yaml
+pytest tests/ -q
 ```
 
-Runs 2 epochs on ≤2 000 samples. Checks that the loader/model/loss chain
-is correctly wired. Saves `checkpoints/sanity_bytercnn_fft75.pt`.
-
-### 3. Full Training
+### 2. Full run — ByteRCNN on FFT-75 (512-byte fragments)
 
 ```bash
-python -m src.training.train_bytercnn \
-    --config configs/fft75_s1_512_bytercnn.yaml
+python -m src.core.runner --experiment configs/experiments/bytercnn_fft75.yaml
+# or, by name:
+python -m src.core.runner --experiment bytercnn_fft75
 ```
 
-Default settings:
-- Epochs: 30 (early stopping, patience=5)
-- Batch size: 256
-- Optimizer: AdamW (lr=1e-3, wd=1e-4)
-- Gradient clipping: 1.0
-
-Saves:
-- `checkpoints/best_bytercnn_fft75.pt` — best checkpoint
-- `outputs/bytercnn_fft75/training_curves.png`
-- `logs/bytercnn_fft75_<timestamp>/metrics_per_epoch.csv`
-
-### 4. Evaluation
+Override any composed config value from the CLI without editing files:
 
 ```bash
-python -m src.evaluation.evaluate_bytercnn \
-    --config configs/fft75_s1_512_bytercnn.yaml
+python -m src.core.runner --experiment bytercnn_fft75 \
+    --override training.epochs=5 --override training.batch_size=128
 ```
 
-Evaluates **only** on the frozen test split. Outputs to
-`outputs/bytercnn_fft75/`:
+### 3. Switch to 4096-byte fragments
+
+```bash
+python -m src.core.runner --experiment bytercnn_fft75_4096
+```
+
+### 4. Outputs
+
+Every run writes a self-contained, reproducible directory to
+`outputs/<run_name>_<timestamp>/`:
 
 | File | Contents |
 |---|---|
-| `metrics.json` | Accuracy, macro P/R/F1, inference time, peak GPU memory |
-| `confusion_matrix.csv` | 75×75 confusion matrix |
-| `per_class_metrics.csv` | Per-class precision, recall, F1, support |
-| `predictions.csv` | Per-sample predictions and confidence |
-| `eval_summary.txt` | Human-readable summary |
+| `config.yaml` | Composed config snapshot |
+| `environment.json`, `git_commit.txt` | Reproducibility metadata |
+| `train.log`, `checkpoint_best.pt`, `checkpoint_last.pt` | Training artifacts |
+| `loss_curve.png`, `accuracy_curve.png`, `lr_curve.png`, `confusion_matrix.png` | Plots |
+| `metrics.json`, `summary.json` | Aggregate metrics |
+| `predictions.csv`, `confusion_matrix.csv`, `per_class_metrics.csv`, `classification_report.txt` | Evaluation detail |
+
+### 5. Compare runs / generate a report
+
+```python
+from pathlib import Path
+from src.evaluation.comparison import discover_runs, compare_runs
+from src.evaluation.reporting import write_benchmark_results, generate_report
+
+runs = discover_runs(Path("outputs"))
+df = compare_runs(runs)
+write_benchmark_results(df, Path("results"))   # benchmark_results.csv / .md
+generate_report(df, Path("results/report.md"))
+```
+
+Full details: **[docs/benchmark.md](docs/benchmark.md)**,
+**[docs/training.md](docs/training.md)**,
+**[docs/evaluation.md](docs/evaluation.md)**.
 
 ---
 

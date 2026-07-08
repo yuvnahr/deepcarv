@@ -1,0 +1,12 @@
+# configs/experiments/bytercnn_fft75.yaml
+# Composes the frozen ByteRCNN baseline on FFT-75 (512-byte fragments)
+# through the unified benchmark framework.
+#
+# Run with:
+#   python -m src.core.runner --experiment configs/experiments/bytercnn_fft75.yaml
+#   python -m src.core.runner --experiment bytercnn_fft75
+name: bytercnn_fft75
+dataset: fft75_512
+model: bytercnn
+training: default
+evaluation: benchmark
