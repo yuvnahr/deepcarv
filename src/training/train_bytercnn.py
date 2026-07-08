@@ -41,7 +41,6 @@ from src.utils.paths import (
     CHECKPOINTS_DIR,
     FFT75_DATA_DIR,
     LOGS_DIR,
-    OUTPUTS_DIR,
     ensure_dirs,
 )
 from src.utils.seed import set_seed
@@ -81,7 +80,8 @@ def _run_epoch(
     grad_clip: float = 0.0,
 ) -> tuple[float, float]:
     """One training or evaluation epoch. Returns (avg_loss, accuracy)."""
-    import logging, time as _time
+    import logging
+    import time as _time
     _logger = logging.getLogger("train_epoch")
 
     is_train = optimizer is not None
@@ -105,6 +105,7 @@ def _run_epoch(
                 loss = criterion(log_probs, y)
 
             if is_train:
+                assert optimizer is not None
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
                 if grad_clip > 0:
@@ -291,8 +292,10 @@ def main(argv: list[str] | None = None) -> None:
         elapsed = time.time() - t0
 
         scheduler.step(va_acc)
-        train_losses.append(tr_loss); val_losses.append(va_loss)
-        train_accs.append(tr_acc);   val_accs.append(va_acc)
+        train_losses.append(tr_loss)
+        val_losses.append(va_loss)
+        train_accs.append(tr_acc)
+        val_accs.append(va_acc)
 
         run_logger.log_epoch(epoch, {
             "train_loss": tr_loss, "val_loss": va_loss,
