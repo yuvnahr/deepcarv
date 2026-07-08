@@ -1,0 +1,8 @@
+# configs/experiments/bytercnn_fft75_4096.yaml
+# Same baseline, 4096-byte fragments — demonstrates that switching
+# benchmarks is purely a config swap.
+name: bytercnn_fft75_4096
+dataset: fft75_4096
+model: bytercnn
+training: default
+evaluation: benchmark

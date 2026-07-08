@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
+# ===========================================================================
+#  setup.sh — Linux / macOS environment setup for DeepCarv / ByteRCNN
+# ===========================================================================
 
 set -e
 
 echo "====================================="
-echo " Project Setup (Linux/macOS)"
+echo " DeepCarv — ByteRCNN FFT-75 Setup"
+echo " (Linux / macOS)"
 echo "====================================="
 
+# ── Python detection ────────────────────────────────────────────────────────
 if command -v python3 >/dev/null 2>&1; then
     PYTHON=python3
 elif command -v python >/dev/null 2>&1; then
     PYTHON=python
 else
-    echo "Python is not installed."
+    echo "ERROR: Python is not installed or not in PATH."
     exit 1
 fi
 
 echo
 $PYTHON --version
 
+# ── Virtual environment ──────────────────────────────────────────────────────
 if [ ! -d "venv" ]; then
     echo
-    echo "Creating virtual environment..."
+    echo "Creating virtual environment…"
     $PYTHON -m venv venv
 else
     echo
@@ -28,51 +34,93 @@ else
 fi
 
 echo
-echo "Activating virtual environment..."
-
+echo "Activating virtual environment…"
 source venv/bin/activate
 
+# ── Pip upgrade ──────────────────────────────────────────────────────────────
 echo
-echo "Upgrading pip..."
-
+echo "Upgrading pip…"
 python -m pip install --upgrade pip setuptools wheel
 
+# ── Dependencies ─────────────────────────────────────────────────────────────
 echo
-echo "Installing dependencies..."
-
+echo "Installing dependencies from requirements.txt…"
 pip install -r requirements.txt
 
+# ── Verification ─────────────────────────────────────────────────────────────
 echo
-echo "Verifying installation..."
-
-python << EOF
-import torch
-import sys
-
-print(f"Python : {sys.version.split()[0]}")
-print(f"PyTorch: {torch.__version__}")
-print(f"CUDA   : {torch.cuda.is_available()}")
-
+echo "Verifying installation…"
+python <<EOF
+import torch, sys
+print(f"Python  : {sys.version.split()[0]}")
+print(f"PyTorch : {torch.__version__}")
+print(f"CUDA    : {torch.cuda.is_available()}")
 if torch.cuda.is_available():
-    print(f"GPU    : {torch.cuda.get_device_name(0)}")
+    print(f"GPU     : {torch.cuda.get_device_name(0)}")
+import sklearn, pandas, numpy, yaml, gdown
+print(f"sklearn : {sklearn.__version__}")
+print(f"pandas  : {pandas.__version__}")
+print(f"numpy   : {numpy.__version__}")
+print(f"gdown   : {gdown.__version__}")
 EOF
 
+# ── Project directories ──────────────────────────────────────────────────────
 echo
-echo "Creating project directories..."
+echo "Creating project directories…"
 
 mkdir -p \
-checkpoints \
-logs \
-outputs \
-results \
-cache \
-datasets \
-models
+    checkpoints \
+    logs \
+    outputs/bytercnn_fft75 \
+    results \
+    cache \
+    datasets \
+    models \
+    data/raw \
+    data/splits \
+    src/data \
+    src/models \
+    src/training \
+    src/evaluation \
+    src/utils \
+    configs \
+    notebooks \
+    benchmarks/ByteRCNN
+
+# ── Model smoke-test (no data needed) ────────────────────────────────────────
+echo
+echo "Running ByteRCNN architecture smoke-test…"
+python -c "
+import sys
+sys.path.insert(0, '.')
+from src.models.bytercnn_wrapper import build_bytercnn
+import torch
+m = build_bytercnn()
+x = torch.randint(0, 256, (2, 512), dtype=torch.long)
+with torch.no_grad():
+    out = m(x)
+assert out.shape == (2, 75), f'Bad shape: {out.shape}'
+n = sum(p.numel() for p in m.parameters())
+print(f'  ByteRCNN OK — output {tuple(out.shape)}, params={n:,}')
+"
 
 echo
 echo "====================================="
 echo " Setup Complete"
 echo "====================================="
 echo
-echo "To activate later:"
-echo "source venv/bin/activate"
+echo "To activate the venv later:"
+echo "  source venv/bin/activate"
+echo
+echo "Quick-start commands:"
+echo "  # 1. Verify dataset (after downloading + unzipping):"
+echo "  python -m src.data.verify_dataset --data_dir data/FFT-75 --fragment_size 512"
+echo
+echo "  # 2. Sanity check:"
+echo "  python -m src.training.sanity_train_bytercnn --config configs/fft75_s1_512_bytercnn.yaml"
+echo
+echo "  # 3. Full training:"
+echo "  python -m src.training.train_bytercnn --config configs/fft75_s1_512_bytercnn.yaml"
+echo
+echo "  # 4. Evaluation:"
+echo "  python -m src.evaluation.evaluate_bytercnn --config configs/fft75_s1_512_bytercnn.yaml"
