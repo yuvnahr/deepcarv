@@ -143,8 +143,9 @@ class FragmentDataset(Dataset):
 
         # ---- Optional caching (always True by default) -------------------
         if cache:
-            # Convert once, keep as tensors in RAM
-            self._X = torch.from_numpy(X.astype(np.int64))   # [N, L]
+            # Store X as int16 (byte values 0-255 fit comfortably — 4x less RAM
+            # than int64). Cast to int64 lazily in __getitem__ per batch.
+            self._X = torch.from_numpy(X.astype(np.int16))   # [N, L]  ~2 bytes/elem
             self._y = torch.from_numpy(y.astype(np.int64))   # [N]
             self._cached = True
         else:
@@ -164,7 +165,8 @@ class FragmentDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         if self._cached:
-            return self._X[idx], self._y[idx]
+            # Cast X from int16 → int64 here (per batch, negligible overhead)
+            return self._X[idx].to(torch.int64), self._y[idx]
         return (
             torch.from_numpy(self._X_np[idx].astype(np.int64)),
             torch.tensor(int(self._y_np[idx]), dtype=torch.long),

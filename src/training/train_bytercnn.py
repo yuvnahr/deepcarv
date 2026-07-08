@@ -29,6 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 import yaml
 
 from src.data.dataset import FragmentDataset, build_dataloader
@@ -68,6 +69,9 @@ _DEFAULTS = {
 # ---------------------------------------------------------------------------
 
 
+_LOG_EVERY = 500   # print a progress line every N batches
+
+
 def _run_epoch(
     model: nn.Module,
     loader: torch.utils.data.DataLoader,
@@ -77,6 +81,9 @@ def _run_epoch(
     grad_clip: float = 0.0,
 ) -> tuple[float, float]:
     """One training or evaluation epoch. Returns (avg_loss, accuracy)."""
+    import logging, time as _time
+    _logger = logging.getLogger("train_epoch")
+
     is_train = optimizer is not None
     model.train(is_train)
     context = torch.enable_grad() if is_train else torch.no_grad()
@@ -84,26 +91,41 @@ def _run_epoch(
     total_loss = 0.0
     correct = 0
     n = 0
+    n_batches = len(loader)
+    t0 = _time.time()
 
+    scaler = GradScaler(enabled=torch.cuda.is_available())
     with context:
-        for x, y in loader:
+        for batch_idx, (x, y) in enumerate(loader, 1):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            log_probs = model(x)
-            loss = criterion(log_probs, y)
+            with autocast(enabled=torch.cuda.is_available()):
+                log_probs = model(x)
+                loss = criterion(log_probs, y)
 
             if is_train:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                scaler.scale(loss).backward()
                 if grad_clip > 0:
+                    scaler.unscale_(optimizer)
                     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
 
             bs = x.size(0)
             total_loss += loss.item() * bs
             correct += (log_probs.argmax(1) == y).sum().item()
             n += bs
+
+            if batch_idx % _LOG_EVERY == 0 or batch_idx == n_batches:
+                elapsed = _time.time() - t0
+                phase = "train" if is_train else "val"
+                _logger.info(
+                    "  [%s] batch %5d/%d | loss %.4f | acc %.4f | %.0fs elapsed",
+                    phase, batch_idx, n_batches,
+                    total_loss / n, correct / n, elapsed,
+                )
 
     return total_loss / n, correct / n
 
