@@ -24,9 +24,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from src.core.interfaces import FragmentClassifier
 from src.evaluation.metrics import compute_classification_metrics, format_classification_report
 from src.utils.device import get_device, gpu_name, peak_memory_mb, reset_peak_memory
 
@@ -36,9 +36,10 @@ logger = logging.getLogger(__name__)
 class Evaluator:
     """Runs a full test-set evaluation for any registered model."""
 
-    def __init__(self, model: nn.Module, device: str | None = None) -> None:
+    def __init__(self, model: FragmentClassifier, device: str | None = None) -> None:
         self.device = get_device(device)
-        self.model = model.to(self.device)
+        model.to(self.device)
+        self.model: FragmentClassifier = model
 
     @torch.no_grad()
     def evaluate(self, loader: DataLoader) -> dict:
@@ -78,7 +79,7 @@ class Evaluator:
         y_pred = np.concatenate(all_pred)
         y_proba = np.concatenate(all_proba)
 
-        num_classes = getattr(self.model, "num_classes", y_proba.shape[1])
+        num_classes = self.model.num_classes
         labels = list(range(num_classes))
         metrics = compute_classification_metrics(y_true, y_pred, y_proba, labels=labels)
 
