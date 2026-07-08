@@ -8,6 +8,7 @@ Used by the ExperimentManager to write environment.json for every run.
 from __future__ import annotations
 
 import platform
+import socket
 import subprocess
 import sys
 from typing import Any
@@ -15,6 +16,11 @@ from typing import Any
 import torch
 
 from src.utils.paths import REPO_ROOT
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional runtime dependency.
+    psutil = None  # type: ignore[assignment]
 
 
 def get_git_commit() -> str:
@@ -60,15 +66,21 @@ def get_cpu_info() -> str:
 def collect_environment_info() -> dict[str, Any]:
     """Collect a JSON-serializable snapshot of the run environment."""
     cuda_available = torch.cuda.is_available()
+    ram_gb = None
+    if psutil is not None:
+        ram_gb = round(psutil.virtual_memory().total / (1024**3), 3)
     return {
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
+        "os": platform.platform(),
+        "hostname": socket.gethostname(),
         "torch_version": torch.__version__,
         "cuda_available": cuda_available,
         "cuda_version": torch.version.cuda if cuda_available else None,
         "gpu_name": torch.cuda.get_device_name(0) if cuda_available else None,
         "gpu_count": torch.cuda.device_count() if cuda_available else 0,
         "cpu_info": get_cpu_info(),
+        "ram_gb": ram_gb,
         "git_commit": get_git_commit(),
         "git_branch": get_git_branch(),
     }
