@@ -1,0 +1,7 @@
+# FFT-75 benchmark dataset using 4096-byte fragments.
+name: fft75
+version: unknown
+format: npz
+root_dir: data/FFT-75
+fragment_size: 4096
+num_classes: 75

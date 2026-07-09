@@ -20,6 +20,7 @@ from src.models.adapters.bytenet_adapter import build_bytenet_adapter
 from src.models.adapters.bytercnn_adapter import build_bytercnn_adapter
 from src.models.adapters.carveformer_adapter import build_carveformer_adapter
 from src.models.adapters.deepcarv_adapter import build_deepcarv_adapter
+from benchmarks.DepthwiseCNN.src.adapter import build_depthwisecnn_adapter
 
 ModelFactory = Callable[..., FragmentClassifier]
 
@@ -43,6 +44,7 @@ MODEL_REGISTRY: dict[str, ModelFactory] = {
     "carveformer": build_carveformer_adapter,
     "bytenet": build_bytenet_adapter,
     "deepcarv": build_deepcarv_adapter,
+    "depthwisecnn": build_depthwisecnn_adapter,
 }
 
 

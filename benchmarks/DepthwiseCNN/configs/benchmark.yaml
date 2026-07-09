@@ -1,4 +1,30 @@
-# DepthwiseCNN Benchmark Configuration
-model: depthwisecnn
-dataset: fft75
-fragment_size: 512
+dataset:
+  root_dir: "data/FFT-75"
+  fragment_size: 4096
+  cache: true
+
+model:
+  name: "depthwisecnn"
+  kwargs:
+    variant: "dsc" # can be 'dsc', 'dsc-se', 'm-dsc'
+
+training:
+  seed: 42
+  epochs: 30
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "reduce_on_plateau"
+  scheduler_factor: 0.5
+  scheduler_patience: 2
+  grad_clip: 1.0
+  patience: 5
+  monitor: "val_acc"
+  monitor_mode: "max"
+  amp: true
+  device: "cuda"
+
+paths:
+  run_outputs: "outputs/DepthwiseCNN"
+  best_checkpoint: "outputs/DepthwiseCNN/checkpoint_best.pt"
