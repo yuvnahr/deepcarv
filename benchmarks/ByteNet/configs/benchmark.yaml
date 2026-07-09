@@ -1,4 +1,41 @@
 # ByteNet Benchmark Configuration
+# ---------------------------------
+# Full benchmark configuration for ByteNet on FFT-75 Scenario #1.
+# Compatible with the DeepCarv benchmark framework.
+#
+# This file captures the frozen benchmark settings for reproducibility.
+# Override individual fields via CLI --override when needed.
+
 model: bytenet
+variant: bytenet_resnet        # bytenet_resnet | bytenet_former
 dataset: fft75
-fragment_size: 512
+fragment_size: 512             # 512 | 4096
+scenario: 1                    # FFT-75 scenario (1 = all 75 classes)
+num_classes: 75
+
+# Architecture (paper §IV-B defaults for ByteResNet)
+ngram_n: 16
+embed_dim: 96
+stage_layers: [2, 2, 2, 2]
+channels: [64, 128, 256, 512]
+byte_branch_dim: 512
+
+# Training (paper §IV-B)
+epochs: 50
+warmup_epochs: 2
+lr: 5.0e-4
+lr_warmup_start: 5.0e-7
+batch_size: 512
+weight_decay: 0.01
+betas: [0.9, 0.999]
+grad_clip: 1.0
+
+# Augmentation
+p_hflip: 0.5
+p_random_erase: 0.5
+p_cutmix: 1.0
+p_mixup: 0.8
+
+# Targets (paper Table III — sanity reference only)
+target_accuracy_512:  0.710    # ByteResNet Scenario #1, 512B
+target_accuracy_4096: 0.821    # ByteResNet Scenario #1, 4096B

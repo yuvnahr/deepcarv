@@ -1,36 +1,40 @@
 """
 src/models/adapters/bytenet_adapter.py
---------------------------------------
-Template/stub adapter for ByteNet.
+---------------------------------------
+Framework registry adapter for ByteNet.
 
-This model is not implemented yet. The class exists so the model
-registry API stays stable (src.models.registry.MODEL_REGISTRY["bytenet"]
-resolves to something) while the real implementation is pending.
+Delegates to benchmarks/ByteNet/src/adapter.py, keeping all
+ByteNet model code isolated in the benchmarks/ directory.
 
-To implement this model later:
-  1. Write/port the ByteNet architecture (as its own module, or as a
-     submodule under benchmarks/ if it ships as a frozen reference impl).
-  2. Replace the class body below with a real nn.Module wrapped to satisfy
-     src.core.interfaces.FragmentClassifier (forward() -> log-probs
-     [batch, num_classes]).
-  3. Add configs/models/bytenet.yaml with real hyperparameters.
-  4. Leave the registry key ("bytenet") and constructor signature stable
-     so existing experiment configs referencing "bytenet" keep working.
+Registry key: "bytenet"
+Factory:      build_bytenet_adapter(num_classes, **kwargs)
+
+Supported kwargs (forwarded to ByteNetBenchmarkAdapter):
+    variant       : 'bytenet_resnet' | 'bytenet_former'  (default: 'bytenet_resnet')
+    fragment_size : 512 | 4096                           (default: 512)
+    embed_dim     : int   (embedding channel dim; auto from paper if not set)
+    stage_layers  : list[int]  (blocks per stage)
+    channels      : list[int]  (channel dims per stage)
+    byte_branch_dim : int  (BBFE output dim, default 512)
+    ngram_n       : int  (n-gram size, default 16)
+    patch_size    : int  (ByteFormer only, default 8)
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from src.models.base import NotAvailableModel
+from benchmarks.ByteNet.src.adapter import (
+    ByteNetBenchmarkAdapter,
+    build_bytenet_benchmark_adapter,
+)
+from src.core.interfaces import FragmentClassifier
 
 
-class ByteNetAdapter(NotAvailableModel):
-    """Stub adapter for ByteNet. Raises NotImplementedError on instantiation."""
-
-    name = "bytenet"
+# Re-export so the registry import chain is transparent
+ByteNetAdapter = ByteNetBenchmarkAdapter
 
 
-def build_bytenet_adapter(num_classes: int, **kwargs: Any) -> "ByteNetAdapter":
-    """Factory used by the model registry. Raises until ByteNet is implemented."""
-    return ByteNetAdapter(num_classes=num_classes, **kwargs)
+def build_bytenet_adapter(num_classes: int, **kwargs: Any) -> FragmentClassifier:
+    """Factory used by src.models.registry.MODEL_REGISTRY['bytenet']."""
+    return build_bytenet_benchmark_adapter(num_classes=num_classes, **kwargs)

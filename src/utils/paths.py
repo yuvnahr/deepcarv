@@ -72,6 +72,10 @@ BYTERCNN_RUN_DIR: Path = OUTPUTS_DIR / "bytercnn_fft75"
 BYTERCNN_BEST_CKPT: Path = CHECKPOINTS_DIR / "best_bytercnn_fft75.pt"
 BYTERCNN_SANITY_CKPT: Path = CHECKPOINTS_DIR / "sanity_bytercnn_fft75.pt"
 
+BYTENET_RUN_DIR: Path = OUTPUTS_DIR / "bytenet_fft75"
+BYTENET_BEST_CKPT: Path = CHECKPOINTS_DIR / "best_bytenet_fft75.pt"
+BYTENET_SANITY_CKPT: Path = CHECKPOINTS_DIR / "sanity_bytenet_fft75.pt"
+
 # ---------------------------------------------------------------------------
 # Kaggle-specific overrides
 # ---------------------------------------------------------------------------
@@ -85,6 +89,9 @@ if os.environ.get("KAGGLE_RUNTIME", "0") == "1":
     BYTERCNN_RUN_DIR   = OUTPUTS_DIR / "bytercnn_fft75"
     BYTERCNN_BEST_CKPT = CHECKPOINTS_DIR / "best_bytercnn_fft75.pt"
     BYTERCNN_SANITY_CKPT = CHECKPOINTS_DIR / "sanity_bytercnn_fft75.pt"
+    BYTENET_RUN_DIR   = OUTPUTS_DIR / "bytenet_fft75"
+    BYTENET_BEST_CKPT = CHECKPOINTS_DIR / "best_bytenet_fft75.pt"
+    BYTENET_SANITY_CKPT = CHECKPOINTS_DIR / "sanity_bytenet_fft75.pt"
 
 
 def get_run_dir(run_name: str, base: Path | None = None) -> Path:
