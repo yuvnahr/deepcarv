@@ -128,7 +128,7 @@ def verify_dataset(
         Which fragment size to verify (512 or 4096).
     """
     print("=" * 65)
-    print(f"  FFT-75 Dataset Verification")
+    print("  FFT-75 Dataset Verification")
     print(f"  data_dir      : {data_dir.resolve()}")
     print(f"  fragment_size : {fragment_size}")
     print("=" * 65)

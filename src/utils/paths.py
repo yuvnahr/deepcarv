@@ -36,6 +36,12 @@ SRC_DIR: Path = REPO_ROOT / "src"
 CONFIGS_DIR: Path = REPO_ROOT / "configs"
 NOTEBOOKS_DIR: Path = REPO_ROOT / "notebooks"
 BENCHMARKS_DIR: Path = REPO_ROOT / "benchmarks"
+DATASETS_DIR: Path = REPO_ROOT / "datasets"
+MODELS_DIR: Path = REPO_ROOT / "models"
+RESULTS_DIR: Path = REPO_ROOT / "results"
+CACHE_DIR: Path = REPO_ROOT / "cache"
+DOCS_DIR: Path = REPO_ROOT / "docs"
+TESTS_DIR: Path = REPO_ROOT / "tests"
 
 # ---------------------------------------------------------------------------
 # Data directories (outside the repo; created at runtime)
@@ -79,6 +85,11 @@ if os.environ.get("KAGGLE_RUNTIME", "0") == "1":
     BYTERCNN_RUN_DIR   = OUTPUTS_DIR / "bytercnn_fft75"
     BYTERCNN_BEST_CKPT = CHECKPOINTS_DIR / "best_bytercnn_fft75.pt"
     BYTERCNN_SANITY_CKPT = CHECKPOINTS_DIR / "sanity_bytercnn_fft75.pt"
+
+
+def get_run_dir(run_name: str, base: Path | None = None) -> Path:
+    """Canonical outputs/<run_name>/ directory used by the ExperimentManager."""
+    return (base or OUTPUTS_DIR) / run_name
 
 
 def ensure_dirs(*dirs: Path) -> None:
