@@ -1,0 +1,4 @@
+# ByteNet Benchmark Configuration
+model: bytenet
+dataset: fft75
+fragment_size: 512
