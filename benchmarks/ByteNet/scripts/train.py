@@ -120,8 +120,8 @@ def random_erase(img: torch.Tensor, p: float) -> torch.Tensor:
                 area = H * W
                 target_area = random.uniform(*_ERASE_SCALE) * area
                 aspect = random.uniform(*_ERASE_RATIO)
-                eh = int(round(math.sqrt(target_area * aspect)))
-                ew = int(round(math.sqrt(target_area / aspect)))
+                eh = round(math.sqrt(target_area * aspect))
+                ew = round(math.sqrt(target_area / aspect))
                 if eh < H and ew < W:
                     i = random.randint(0, H - eh)
                     j = random.randint(0, W - ew)
@@ -279,9 +279,9 @@ def run_epoch(
     loader: DataLoader,
     device: torch.device,
     optimizer: Optional[torch.optim.Optimizer],
-    scheduler: Optional[object],
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     cfg: dict,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: Optional[torch.cuda.amp.GradScaler],
     num_classes: int,
     epoch: int,
     total_epochs: int,
@@ -357,7 +357,8 @@ def run_epoch(
                     log_probs = model(x)
                     loss = F.nll_loss(log_probs, y)
 
-            if is_train:
+            # Ensure static type checkers know optimizer is not None
+            if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
                 if scaler is not None:
                     scaler.scale(loss).backward()
@@ -509,12 +510,12 @@ def main(argv=None) -> None:
     epochs       = _r(args.epochs,       train_cfg.get("epochs"),       _DEFAULTS["epochs"])
     batch_size   = _r(args.batch_size,   train_cfg.get("batch_size"),   _DEFAULTS["batch_size"])
     lr           = _r(args.lr,           train_cfg.get("lr"),           _DEFAULTS["lr"])
-    lr_warmup    = train_cfg.get("lr_warmup_start", _DEFAULTS["lr_warmup_start"])
-    warmup_eps   = train_cfg.get("warmup_epochs",   _DEFAULTS["warmup_epochs"])
-    weight_decay = train_cfg.get("weight_decay",     _DEFAULTS["weight_decay"])
-    betas        = tuple(train_cfg.get("betas",      _DEFAULTS["betas"]))
-    grad_clip    = train_cfg.get("grad_clip",         _DEFAULTS["grad_clip"])
-    patience     = train_cfg.get("patience",          _DEFAULTS["patience"])
+    lr_warmup    = _r(None, train_cfg.get("lr_warmup_start"), _DEFAULTS["lr_warmup_start"])
+    warmup_eps   = _r(None, train_cfg.get("warmup_epochs"),   _DEFAULTS["warmup_epochs"])
+    weight_decay = _r(None, train_cfg.get("weight_decay"),    _DEFAULTS["weight_decay"])
+    betas        = tuple(_r(None, train_cfg.get("betas"),     _DEFAULTS["betas"]))
+    grad_clip    = _r(None, train_cfg.get("grad_clip"),       _DEFAULTS["grad_clip"])
+    patience     = _r(None, train_cfg.get("patience"),        _DEFAULTS["patience"])
     fragment_size = _r(args.fragment_size,
                        ds_cfg.get("fragment_size") or model_cfg.get("fragment_size"),
                        _DEFAULTS["fragment_size"])
@@ -524,12 +525,12 @@ def main(argv=None) -> None:
 
     # Augmentation probs
     aug_cfg = {
-        "p_hflip":       train_cfg.get("p_hflip",       _DEFAULTS["p_hflip"]),
-        "p_random_erase":train_cfg.get("p_random_erase", _DEFAULTS["p_random_erase"]),
-        "p_cutmix":      train_cfg.get("p_cutmix",       _DEFAULTS["p_cutmix"]),
-        "p_mixup":       train_cfg.get("p_mixup",        _DEFAULTS["p_mixup"]),
-        "mixup_alpha":   train_cfg.get("mixup_alpha",    _DEFAULTS["mixup_alpha"]),
-        "cutmix_alpha":  train_cfg.get("cutmix_alpha",   _DEFAULTS["cutmix_alpha"]),
+        "p_hflip":       _r(None, train_cfg.get("p_hflip"),       _DEFAULTS["p_hflip"]),
+        "p_random_erase":_r(None, train_cfg.get("p_random_erase"),_DEFAULTS["p_random_erase"]),
+        "p_cutmix":      _r(None, train_cfg.get("p_cutmix"),      _DEFAULTS["p_cutmix"]),
+        "p_mixup":       _r(None, train_cfg.get("p_mixup"),       _DEFAULTS["p_mixup"]),
+        "mixup_alpha":   _r(None, train_cfg.get("mixup_alpha"),   _DEFAULTS["mixup_alpha"]),
+        "cutmix_alpha":  _r(None, train_cfg.get("cutmix_alpha"),  _DEFAULTS["cutmix_alpha"]),
         "grad_clip":     grad_clip,
         "log_every":     _DEFAULTS["log_every"],
     }

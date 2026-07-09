@@ -447,6 +447,7 @@ class RVFEStage(nn.Module):
                 blocks.append(PoolFormerBlock(out_channels))
         self.blocks = nn.Sequential(*blocks)
 
+        self.down: nn.Module
         if is_last:
             self.down = nn.AdaptiveAvgPool2d(1)   # GAP
         else:
@@ -565,7 +566,9 @@ class ImageBranch(nn.Module):
         features : Tensor [B, channels[-1]]
         """
         x = self.embedding(img)         # [B, C0, H', W']
-        for i, stage in enumerate(self.stages):
+        import typing
+        for i, m in enumerate(self.stages):
+            stage = typing.cast(RVFEStage, m)
             x = stage.blocks(x)
             if i < 3:
                 x = self.inter_downs[i](x)
