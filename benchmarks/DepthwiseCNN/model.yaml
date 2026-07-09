@@ -1,0 +1,6 @@
+name: DepthwiseCNN
+status: scaffold
+paper: TODO
+implementation: pending
+adapter: pending
+config: benchmark.yaml

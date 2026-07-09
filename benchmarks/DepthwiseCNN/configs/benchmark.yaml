@@ -1,0 +1,4 @@
+# DepthwiseCNN Benchmark Configuration
+model: depthwisecnn
+dataset: fft75
+fragment_size: 512
