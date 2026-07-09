@@ -35,10 +35,13 @@ class ModelRegistryError(RuntimeError):
 # Maps model name (as used in configs/models/<name>.yaml and experiment
 # configs) -> a zero-argument-friendly factory function.
 #
-# Implemented:   bytercnn
+# Implemented:   bytercnn, depthwisecnn
 # Stub/template: carveformer, bytenet, deepcarv (raise NotImplementedError
 #                 on instantiation, but the key resolves — see
 #                 src/models/base.py:NotAvailableModel)
+#
+# depthwisecnn accepts an optional `variant` kwarg: "dsc" | "dsc-se" | "m-dsc"
+# (default "dsc").  Pass via benchmark YAML → model.kwargs.variant.
 MODEL_REGISTRY: dict[str, ModelFactory] = {
     "bytercnn": build_bytercnn_adapter,
     "carveformer": build_carveformer_adapter,
