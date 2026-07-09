@@ -1,0 +1,4 @@
+# CarveFormer Benchmark Configuration
+model: carveformer
+dataset: fft75
+fragment_size: 512
