@@ -39,12 +39,19 @@ pip install "timm>=1.0.0"          # Swin V2 backbone (already in requirements)
 
 ## Data
 
-The benchmark reads the pre-split FFT-75 NPZ files directly — no CSV, no split
+The FFT-75 dataset (a few GB) is **not** stored in the git repo. It lives in
+Google Drive and is fetched at runtime with `gdown` (see the Kaggle notebook).
+The benchmark then reads the pre-split NPZ files directly — no CSV, no split
 regeneration:
 
 ```
 {root_dir}/{fragment_size}/{train,val,test}.npz    # each: X [N, L] uint8, y [N] int
 ```
+
+On Kaggle, set `GDRIVE_FILE_ID` (a single zip) or `GDRIVE_FOLDER_ID` (a shared
+folder) in the notebook's config cell; it downloads and extracts FFT-75 into
+`DATA_DIR` automatically (idempotent — skips if already present). For local
+runs, point `--data-dir` at wherever you unpacked the dataset.
 
 ## Run locally
 
