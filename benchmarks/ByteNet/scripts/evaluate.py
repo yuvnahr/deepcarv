@@ -50,7 +50,7 @@ def _parse_args(argv=None):
                    choices=["bytenet_resnet", "bytenet_former"])
     p.add_argument("--out_dir", type=Path, default=None,
                    help="Output directory for evaluation artefacts.")
-    p.add_argument("--batch_size", type=int, default=256)
+    p.add_argument("--batch_size", type=int, default=1024)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args(argv)
 

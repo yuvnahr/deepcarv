@@ -113,21 +113,41 @@ def random_erase(img: torch.Tensor, p: float) -> torch.Tensor:
     if p <= 0:
         return img
     B, C, H, W = img.shape
-    out = img.clone()
-    for b in range(B):
-        if random.random() < p:
-            for _ in range(10):
-                area = H * W
-                target_area = random.uniform(*_ERASE_SCALE) * area
-                aspect = random.uniform(*_ERASE_RATIO)
-                eh = round(math.sqrt(target_area * aspect))
-                ew = round(math.sqrt(target_area / aspect))
-                if eh < H and ew < W:
-                    i = random.randint(0, H - eh)
-                    j = random.randint(0, W - ew)
-                    out[b, :, i:i + eh, j:j + ew] = torch.rand(C, eh, ew, device=img.device)
-                    break
-    return out
+    erase = torch.rand(B, device=img.device) < p
+    pending = erase.nonzero(as_tuple=False).flatten()
+    if pending.numel() == 0:
+        return img
+
+    done = torch.zeros(B, device=img.device, dtype=torch.bool)
+    area = H * W
+    for _ in range(10):
+        active = pending[~done[pending]]
+        if active.numel() == 0:
+            break
+
+        n_active = active.numel()
+        target_area = torch.empty(n_active, device=img.device).uniform_(*_ERASE_SCALE) * area
+        aspect = torch.empty(n_active, device=img.device).uniform_(*_ERASE_RATIO)
+        eh = torch.sqrt(target_area * aspect).round().to(torch.long)
+        ew = torch.sqrt(target_area / aspect).round().to(torch.long)
+        valid = (eh > 0) & (ew > 0) & (eh < H) & (ew < W)
+        if not valid.any():
+            continue
+
+        samples = active[valid]
+        eh = eh[valid]
+        ew = ew[valid]
+        top = (torch.rand_like(eh, dtype=torch.float32) * (H - eh + 1)).floor().to(torch.long)
+        left = (torch.rand_like(ew, dtype=torch.float32) * (W - ew + 1)).floor().to(torch.long)
+
+        for b, h, w, i, j in zip(
+            samples.tolist(), eh.tolist(), ew.tolist(), top.tolist(), left.tolist()
+        ):
+            img[b, :, i:i + h, j:j + w] = torch.rand(
+                C, h, w, device=img.device, dtype=img.dtype
+            )
+            done[b] = True
+    return img
 
 
 def cutmix_batch(
@@ -159,9 +179,8 @@ def cutmix_batch(
 
     lam = 1.0 - (x2 - x1) * (y2 - y1) / (W * H)
 
-    mixed = img.clone()
-    mixed[:, :, y1:y2, x1:x2] = img[rand_idx, :, y1:y2, x1:x2]
-    return mixed, (target_a, target_b, lam)
+    img[:, :, y1:y2, x1:x2] = img[rand_idx, :, y1:y2, x1:x2]
+    return img, (target_a, target_b, lam)
 
 
 def mixup_batch(
@@ -281,7 +300,7 @@ def run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     cfg: dict,
-    scaler: Optional[torch.cuda.amp.GradScaler],
+    scaler: Optional[torch.amp.GradScaler],
     num_classes: int,
     epoch: int,
     total_epochs: int,
@@ -325,7 +344,8 @@ def run_epoch(
     """
     is_train = optimizer is not None
     model.train(is_train)
-    context = torch.enable_grad() if is_train else torch.no_grad()
+    context = torch.enable_grad() if is_train else torch.inference_mode()
+    aug_model = model if hasattr(model, "_convert_to_image") else _unwrap_compiled(model)
 
     total_loss = 0.0
     correct = 0
@@ -336,21 +356,25 @@ def run_epoch(
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            with torch.autocast(device_type=device.type, enabled=(scaler is not None)):
+            with torch.amp.autocast(
+                device_type="cuda",
+                dtype=torch.float16,
+                enabled=(scaler is not None),
+            ):
                 if is_train:
                     # ---- Augmentation-aware forward ----
-                    img = model._convert_to_image(x)      # [B, C, H, W]
+                    img = aug_model._convert_to_image(x)      # [B, C, H, W]
                     img, mixed_target = apply_image_augmentation(
                         img, y, cfg, training=True
                     )
                     # Byte branch (no augmentation on raw bytes)
-                    xsf = model.byte_branch(x)
+                    xsf = aug_model.byte_branch(x)
                     # Image branch
-                    xdf = model.image_branch(img)
+                    xdf = aug_model.image_branch(img)
                     # Fusion
                     import torch.nn.functional as F_inner
                     fused = torch.cat([xsf, xdf], dim=1)
-                    logits = model.classifier(fused)
+                    logits = aug_model.classifier(fused)
                     log_probs = F_inner.log_softmax(logits, dim=1)
                     loss = soft_nll_loss(log_probs, mixed_target, num_classes)
                 else:
@@ -473,6 +497,11 @@ def _r(cli_val, cfg_val, default):
     return cli_val if cli_val is not None else (cfg_val if cfg_val is not None else default)
 
 
+def _unwrap_compiled(module: nn.Module) -> nn.Module:
+    """Return the original module when torch.compile wraps it."""
+    return getattr(module, "_orig_mod", module)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -553,6 +582,14 @@ def main(argv=None) -> None:
     # ---- Setup -----------------------------------------------------------
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
     logger.info("=== ByteNet Training: %s | fragment_size=%d | device=%s ===",
                 variant, fragment_size, device)
 
@@ -586,6 +623,17 @@ def main(argv=None) -> None:
     logger.info("Model: %s | classes=%d | params=%s",
                 variant, train_ds.num_classes, f"{n_params:,}")
 
+    # ---- Resume ----------------------------------------------------------
+    start_epoch = 1
+    if args.resume and args.resume.exists():
+        ckpt = torch.load(args.resume, map_location=device)
+        model._model.load_state_dict(ckpt.get("model_state_dict", ckpt))
+        logger.info("Resumed from %s", args.resume)
+
+    if torch.cuda.is_available() and hasattr(torch, "compile"):
+        model._model = torch.compile(model._model)
+        logger.info("Enabled torch.compile for ByteNet core model.")
+
     # ---- Optimizer & Scheduler ------------------------------------------
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, betas=betas, weight_decay=weight_decay
@@ -600,14 +648,7 @@ def main(argv=None) -> None:
         lr_peak=lr,
     )
     use_amp = torch.cuda.is_available()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
-
-    # ---- Resume ----------------------------------------------------------
-    start_epoch = 1
-    if args.resume and args.resume.exists():
-        ckpt = torch.load(args.resume, map_location=device)
-        model._model.load_state_dict(ckpt.get("model_state_dict", ckpt))
-        logger.info("Resumed from %s", args.resume)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp) if use_amp else None
 
     # ---- Training loop --------------------------------------------------
     best_val_acc = -1.0
@@ -645,7 +686,7 @@ def main(argv=None) -> None:
             no_improve = 0
             torch.save({
                 "epoch": epoch,
-                "model_state_dict": model._model.state_dict(),
+                "model_state_dict": _unwrap_compiled(model._model).state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_acc": va_acc,
                 "val_loss": va_loss,

@@ -41,7 +41,6 @@ Usage
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -193,6 +192,8 @@ def build_dataloader(
     shuffle: bool = False,
     num_workers: int | None = None,
     pin_memory: bool = True,
+    persistent_workers: bool | None = None,
+    prefetch_factor: int | None = 4,
     drop_last: bool = False,
 ) -> DataLoader:
     """Return a DataLoader with sane defaults.
@@ -204,28 +205,37 @@ def build_dataloader(
     shuffle : bool
         True for training, False for val/test.
     num_workers : int | None
-        Defaults to min(4, cpu_count // 2).
-        If the dataset is fully cached in RAM (cache=True), num_workers=0
-        is often faster because data is already a tensor.
+        Defaults to 4 on CUDA (Kaggle T4-friendly), otherwise 0.
     pin_memory : bool
         Auto-disabled if CUDA is not available.
+    persistent_workers : bool | None
+        Keep worker processes alive between epochs when num_workers > 0.
+        Defaults to True for worker-based loading.
+    prefetch_factor : int | None
+        Number of batches each worker preloads. Only valid when
+        num_workers > 0.
     drop_last : bool
         Drop last incomplete batch (useful during training).
     """
     if num_workers is None:
-        cpu_count = os.cpu_count() or 1
-        # With full RAM cache, inter-process communication overhead
-        # outweighs any loading benefit.
-        num_workers = 0 if dataset._cached else min(4, max(0, cpu_count // 2))
+        # Kaggle T4 runs are input-pipeline bound with the old cached=RAM
+        # default of 0 workers. Four workers is usually the best trade-off
+        # there; keep CPU-only/local runs simple by defaulting to 0.
+        num_workers = 4 if torch.cuda.is_available() else 0
+
+    if persistent_workers is None:
+        persistent_workers = num_workers > 0
 
     _pin = pin_memory and torch.cuda.is_available()
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": _pin,
+        "drop_last": drop_last,
+        "persistent_workers": persistent_workers and num_workers > 0,
+    }
+    if num_workers > 0 and prefetch_factor is not None:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
 
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=_pin,
-        drop_last=drop_last,
-        persistent_workers=(num_workers > 0),
-    )
+    return DataLoader(dataset, **loader_kwargs)
