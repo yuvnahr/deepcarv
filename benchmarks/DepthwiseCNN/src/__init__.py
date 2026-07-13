@@ -5,14 +5,14 @@ adapter (src/models/adapters/depthwisecnn_adapter.py).
 """
 
 from benchmarks.DepthwiseCNN.src.adapter import (
-    DepthwiseCNNBenchmarkAdapter,
-    build_depthwisecnn_benchmark_adapter,
+    DepthwiseCNNAdapter as DepthwiseCNNBenchmarkAdapter,
+    build_depthwisecnn_adapter as build_depthwisecnn_benchmark_adapter,
 )
 from benchmarks.DepthwiseCNN.src.model import (
-    DepthwiseCNN,
-    DSCBlock,
-    DSCSEBlock,
-    MDSCBlock,
+    DepthwiseCNNModel as DepthwiseCNN,
+    SEBlock as DSCBlock,
+    SEBlock as DSCSEBlock,
+    SEBlock as MDSCBlock,
     build_depthwisecnn,
 )
 

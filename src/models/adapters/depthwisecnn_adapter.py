@@ -24,13 +24,13 @@ from __future__ import annotations
 from typing import Any
 
 from benchmarks.DepthwiseCNN.src.adapter import (
-    DepthwiseCNNBenchmarkAdapter,
-    build_depthwisecnn_benchmark_adapter,
+    DepthwiseCNNAdapter as BenchmarkDepthwiseCNNAdapter,
+    build_depthwisecnn_adapter as build_depthwisecnn_benchmark_adapter,
 )
 from src.core.interfaces import FragmentClassifier
 
 # Re-export so the registry import chain is transparent
-DepthwiseCNNAdapter = DepthwiseCNNBenchmarkAdapter
+DepthwiseCNNAdapter = BenchmarkDepthwiseCNNAdapter
 
 
 def build_depthwisecnn_adapter(num_classes: int, **kwargs: Any) -> FragmentClassifier:
