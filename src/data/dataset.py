@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -227,7 +228,7 @@ def build_dataloader(
         persistent_workers = num_workers > 0
 
     _pin = pin_memory and torch.cuda.is_available()
-    loader_kwargs = {
+    loader_kwargs: dict[str, Any] = {
         "batch_size": batch_size,
         "shuffle": shuffle,
         "num_workers": num_workers,
