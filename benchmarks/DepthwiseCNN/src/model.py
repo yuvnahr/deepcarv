@@ -1,445 +1,582 @@
 """
 benchmarks/DepthwiseCNN/src/model.py
---------------------------------------
-Implementation of the lightweight CNN family from:
+------------------------------------
+PyTorch implementation of the **DepthwiseCNN** family of file-fragment
+classifiers, drawn from:
 
-    "File Fragment Type Classification Using Light-Weight Convolutional Neural Networks"
+    "File Fragment Type Classification Using Light-Weight
+     Convolutional Neural Networks"
 
 Three variants are supported:
 
-    DSC    — Depthwise Separable Convolution baseline
-    DSC-SE — DSC + Squeeze-and-Excitation blocks (SE)
-    M-DSC  — Multi-scale Depthwise Separable Convolution (Inception-style branches)
+- **DSC**    – Depthwise Separable Convolution baseline
+- **DSC-SE** – DSC with per-block Squeeze-and-Excitation gates
+- **M-DSC**  – Modified DSC: depthwise first-conv, GroupNorm, ReLU,
+               head Dropout
 
-Architecture overview (from §III of the paper)
-----------------------------------------------
+Public interface
+----------------
+    from benchmarks.DepthwiseCNN.src.model import build_depthwisecnn
 
-Input: raw byte sequence  [B, fragment_size]  (values 0–255)
+    model = build_depthwisecnn(num_classes=75, variant="dsc-se")
+    log_probs = model(x)   # x: [B, L] int64, log-probs: [B, num_classes]
 
-Stage 1 — Byte Embedding
-    nn.Embedding(256, embed_dim)            → [B, L, embed_dim]
-    Permute to [B, embed_dim, L]            (treat channels-first for Conv1d)
+All variants accept raw byte sequences as ``torch.long`` tensors with
+values in ``[0, 255]``.  The embedding layer is part of the forward pass
+so no external pre-processing is required.
 
-Stage 2 — Inception/DSC Blocks  (num_blocks times)
-    Each block is one of:
-        DSC block   : depthwise_conv → BN → Hardswish → pointwise_conv → GroupNorm
-        DSC-SE block: DSC block + SE sub-block (channel attention)
-        M-DSC block : three parallel DSC branches (kernels 3, 7, 11) → cat → project
+Paper ambiguities and design decisions
+---------------------------------------
+1. **Residual in InceptionBlock** – The paper describes a residual/shortcut
+   path drawn in Figure 4 but does not give explicit details on how the
+   shortcut is resized when channels change.  Here we use a 1×1 Conv1d
+   (no bias, no norm) on the shortcut whenever in_channels != out_channels,
+   matching standard ResNet practice.
 
-Stage 3 — Head
-    Global average pooling  [B, channels, L] → [B, channels]
-    Dropout
-    Linear(channels, num_classes)
-    log_softmax
+2. **MaxPool on shortcut** – Figure 4 shows the shortcut being added to the
+   pooled inception output, implying the shortcut must also be pooled.
+   We apply the same MaxPool1d(4, 4) to the shortcut when pool=True.
 
-Architectural assumptions (paper ambiguities documented here)
--------------------------------------------------------------
-* embed_dim (§III-A): The paper shows an "embedding layer" without specifying width.
-  We default to 64, matching common practice for byte-level models at this scale.
-  ASSUMPTION: embed_dim = 64.
+3. **SE reduction ratio** – The paper does not state an explicit ratio for
+   SE blocks.  We use reduction=4 uniformly (standard MobileNetV3 value).
+   This is annotated where relevant.
 
-* num_blocks (§III-B): The paper does not give an explicit number for the
-  DepthwiseCNN stack.  ByteRCNN uses 3 blocks; we use 4 to match the depth
-  shown in the paper's figure.  ASSUMPTION: num_blocks = 4.
+4. **M-DSC first conv** – The paper states the first conv is depthwise in
+   M-DSC.  This means it maps 32→32 with groups=32 (depth-only, no point-
+   wise mixing), equivalent to a per-channel filter.  A pointwise step is
+   not added here because the paper does not mention one.
 
-* channels (§III-B): Paper shows channel progression 64 → 128 → 256 → 256.
-  ASSUMPTION: [64, 128, 256, 256].
+5. **GroupNorm group count** – GroupNorm requires channels % num_groups == 0.
+   We use num_groups=8 which divides evenly into all channel widths used
+   (32, 64, 128).
 
-* GroupNorm groups (§III-B): Paper specifies GroupNorm after the pointwise
-  convolution.  We use groups = max(1, channels // 16), clamped so that
-  channels % groups == 0.  ASSUMPTION: num_groups = channels // 16.
-
-* Kernel sizes for M-DSC (§III-C): Paper specifies three depthwise branches
-  with kernel sizes 3, 7, and 11.  Padding is set so spatial dimension is
-  unchanged.  ASSUMPTION: padding = kernel_size // 2.
-
-* SE reduction ratio (§III-B, DSC-SE): Paper mentions SE blocks without
-  specifying the reduction ratio r.  Standard SE uses r = 16; we adopt that.
-  ASSUMPTION: se_reduction = 16.
-
-* Dropout probability: Paper trains with dropout; no value given.
-  ASSUMPTION: p_dropout = 0.5 (matches ByteRCNN baseline convention).
-
-* Stride: All depthwise convolutions use stride=1; downsampling is via
-  max-pooling after every other block.  ASSUMPTION: max-pool after blocks 1
-  and 3 (halving the sequence length twice).
-
-This file is intentionally model-only.  No training logic lives here.
-All training is handled by the DeepCarv generic Trainer via the adapter.
+6. **Dropout placement (M-DSC)** – The paper places dropout before the final
+   classifier.  We apply it after global average pooling and before the
+   1×1 classifier conv, mirroring MobileNetV3's head structure.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Literal
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # ---------------------------------------------------------------------------
-# Type aliases
-# ---------------------------------------------------------------------------
-
-Variant = Literal["dsc", "dsc_se", "m_dsc"]
-
-
-# ---------------------------------------------------------------------------
-# Building-block helpers
+# Literal aliases for documented variant names
 # ---------------------------------------------------------------------------
 
+Variant = Literal["dsc", "dsc-se", "m-dsc"]
+NormType = Literal["batch", "group"]
+ActType = Literal["hardswish", "relu"]
 
-def _groupnorm(channels: int) -> nn.GroupNorm:
-    """GroupNorm with num_groups = channels // 16 (paper assumption).
+# Number of groups for GroupNorm; all channel widths used (32, 64, 128) are
+# divisible by 8.
+_GROUP_NORM_GROUPS: int = 8
 
-    Clamps so that channels % groups == 0.
-    """
-    num_groups = max(1, channels // 16)
-    # Walk down until divisible
-    while channels % num_groups != 0 and num_groups > 1:
-        num_groups -= 1
-    return nn.GroupNorm(num_groups, channels)
-
-
-def _se_block(channels: int, reduction: int = 16) -> nn.Sequential:
-    """Squeeze-and-Excitation block (channel attention).
-
-    SE-block:  GAP → FC(r) → ReLU → FC(C) → Sigmoid → scale
-
-    Returned as a nn.Sequential that takes [B, C, L] → [B, C, L].
-    Since nn.Sequential is linear (no branching), we wrap it in SeBlock
-    so the residual multiplication is explicit.
-    """
-    mid = max(1, channels // reduction)
-    return nn.Sequential(
-        nn.AdaptiveAvgPool1d(1),        # [B, C, 1]
-        nn.Flatten(1),                  # [B, C]
-        nn.Linear(channels, mid, bias=False),
-        nn.ReLU(inplace=True),
-        nn.Linear(mid, channels, bias=False),
-        nn.Sigmoid(),
-    )
-
-
-class SEBlock(nn.Module):
-    """Squeeze-and-Excitation block for 1-D feature maps [B, C, L]."""
-
-    def __init__(self, channels: int, reduction: int = 16) -> None:
-        super().__init__()
-        mid = max(1, channels // reduction)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.fc1 = nn.Linear(channels, mid, bias=False)
-        self.fc2 = nn.Linear(mid, channels, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, C, L]
-        s = self.pool(x).squeeze(-1)           # [B, C]
-        s = F.relu(self.fc1(s), inplace=True)  # [B, mid]
-        s = torch.sigmoid(self.fc2(s))          # [B, C]
-        return x * s.unsqueeze(-1)              # [B, C, L]
+# SE reduction ratio – see design decision #3 in module docstring.
+_SE_REDUCTION: int = 4
 
 
 # ---------------------------------------------------------------------------
-# DSC block
+# Primitive building blocks
 # ---------------------------------------------------------------------------
 
 
-class DSCBlock(nn.Module):
-    """Depthwise Separable Convolution block (DSC).
+class SeparableConv1d(nn.Module):
+    """Depthwise-separable 1-D convolution (depthwise then pointwise).
 
-    Architecture (paper §III-B):
-        depthwise_conv(kernel_size, groups=in_ch) → BN → Hardswish
-        pointwise_conv(1×1)                       → GroupNorm
+    Parameters
+    ----------
+    in_channels:
+        Number of input channels.
+    out_channels:
+        Number of output channels produced by the pointwise step.
+    kernel_size:
+        Kernel size of the depthwise convolution.
+    stride:
+        Stride of the depthwise convolution (pointwise stride is always 1).
+    padding:
+        Padding applied to the depthwise convolution.
+
+    Notes
+    -----
+    Neither the depthwise nor the pointwise layer uses a bias because they
+    are followed immediately by a normalisation layer.
     """
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int = 3,
+        kernel_size: int,
+        stride: int = 1,
+        padding: int = 0,
     ) -> None:
         super().__init__()
-        padding = kernel_size // 2
         self.depthwise = nn.Conv1d(
-            in_channels, in_channels,
+            in_channels,
+            in_channels,
             kernel_size=kernel_size,
+            stride=stride,
             padding=padding,
             groups=in_channels,
             bias=False,
         )
-        self.bn = nn.BatchNorm1d(in_channels)
-        self.act = nn.Hardswish()
-        self.pointwise = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        self.gn = _groupnorm(out_channels)
-
-        # Residual projection when channel dims differ
-        self.proj: nn.Module
-        if in_channels != out_channels:
-            self.proj = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        else:
-            self.proj = nn.Identity()
+        self.pointwise = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            bias=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.proj(x)
-        out = self.depthwise(x)
-        out = self.bn(out)
-        out = self.act(out)
-        out = self.pointwise(out)
-        out = self.gn(out)
-        return out + residual
-
-
-# ---------------------------------------------------------------------------
-# DSC-SE block
-# ---------------------------------------------------------------------------
-
-
-class DSCSEBlock(nn.Module):
-    """DSC block augmented with a Squeeze-and-Excitation attention sub-block.
-
-    Architecture (paper §III-B, DSC-SE variant):
-        DSCBlock → SEBlock
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        se_reduction: int = 16,
-    ) -> None:
-        super().__init__()
-        self.dsc = DSCBlock(in_channels, out_channels, kernel_size=kernel_size)
-        self.se = SEBlock(out_channels, reduction=se_reduction)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.dsc(x)
-        out = self.se(out)
-        return out
-
-
-# ---------------------------------------------------------------------------
-# M-DSC block (Inception-style multi-scale)
-# ---------------------------------------------------------------------------
-
-
-class MDSCBlock(nn.Module):
-    """Multi-scale Depthwise Separable Convolution block.
-
-    Architecture (paper §III-C):
-        Three parallel depthwise-separable branches with kernel sizes 3, 7, 11
-        → concatenate along channel axis
-        → 1×1 projection back to out_channels
-
-    The three branches each produce out_channels // 3 channels internally,
-    then the concatenation (3 × out_channels // 3 ≈ out_channels) is projected
-    to exactly out_channels via a 1×1 pointwise conv.
-
-    ASSUMPTION (§III-C ambiguity): The paper does not specify per-branch channel
-    widths.  We allocate out_channels // 3 per branch so the concatenated
-    representation has ~out_channels features before projection.  Integer rounding
-    means the first branch gets the remainder: widths = (w + r, w, w) where
-    w = out_channels // 3 and r = out_channels % 3.
-    """
-
-    _KERNELS: tuple[int, int, int] = (3, 7, 11)
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-    ) -> None:
-        super().__init__()
-
-        # Per-branch channel allocation
-        base_w = out_channels // 3
-        remainder = out_channels % 3
-        branch_widths = [base_w + remainder, base_w, base_w]
-
-        self.branches = nn.ModuleList()
-        for k, bw in zip(self._KERNELS, branch_widths):
-            self.branches.append(
-                nn.Sequential(
-                    # depthwise
-                    nn.Conv1d(
-                        in_channels, in_channels,
-                        kernel_size=k, padding=k // 2,
-                        groups=in_channels, bias=False,
-                    ),
-                    nn.BatchNorm1d(in_channels),
-                    nn.Hardswish(),
-                    # pointwise to branch width
-                    nn.Conv1d(in_channels, bw, kernel_size=1, bias=False),
-                    _groupnorm(bw),
-                )
-            )
-
-        # Concatenated channels == sum(branch_widths) == out_channels
-        concat_channels = sum(branch_widths)
-        self.project = nn.Conv1d(concat_channels, out_channels, kernel_size=1, bias=False)
-        self.project_gn = _groupnorm(out_channels)
-
-        # Residual projection
-        self.res_proj: nn.Module
-        if in_channels != out_channels:
-            self.res_proj = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        else:
-            self.res_proj = nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.res_proj(x)
-        branches = [branch(x) for branch in self.branches]
-        out = torch.cat(branches, dim=1)   # [B, concat_ch, L]
-        out = self.project(out)
-        out = self.project_gn(out)
-        return out + residual
-
-
-# ---------------------------------------------------------------------------
-# Main DepthwiseCNN model
-# ---------------------------------------------------------------------------
-
-
-class DepthwiseCNN(nn.Module):
-    """Lightweight 1-D CNN for file-fragment classification.
-
-    Supports three variants: 'dsc', 'dsc_se', 'mdsc'.
-
-    Parameters
-    ----------
-    num_classes : int
-        Number of output classes (75 for FFT-75).
-    fragment_size : int
-        Input length in bytes (512 or 4096).
-    variant : str
-        One of 'dsc', 'dsc_se', 'm_dsc'.
-    embed_dim : int
-        Width of the byte embedding.  ASSUMPTION: 64.
-    channels : list[int]
-        Channel dimension after each block stage.
-        ASSUMPTION: [64, 128, 256, 256].
-    kernel_size : int
-        Depthwise kernel size for DSC/DSC-SE blocks.
-        ASSUMPTION: 3 (standard). Ignored for M-DSC (uses 3, 7, 11).
-    se_reduction : int
-        SE block reduction ratio.  ASSUMPTION: 16.
-    p_dropout : float
-        Dropout probability before the classifier head.  ASSUMPTION: 0.5.
-    """
-
-    def __init__(
-        self,
-        num_classes: int,
-        fragment_size: int = 512,
-        variant: Variant = "dsc",
-        embed_dim: int = 64,
-        channels: list[int] | None = None,
-        kernel_size: int = 3,
-        se_reduction: int = 16,
-        p_dropout: float = 0.5,
-    ) -> None:
-        super().__init__()
-        if channels is None:
-            channels = [64, 128, 256, 256]
-
-        self.num_classes = num_classes
-        self.fragment_size = fragment_size
-        self.variant = variant
-        _channels = [embed_dim] + list(channels)
-
-        # ---- Stage 1: Byte Embedding ------------------------------------
-        self.embedding = nn.Embedding(256, embed_dim)
-
-        # ---- Stage 2: Block stack ----------------------------------------
-        blocks: list[nn.Module] = []
-        for i in range(len(channels)):
-            in_ch = _channels[i]
-            out_ch = _channels[i + 1]
-
-            if variant == "dsc":
-                blocks.append(DSCBlock(in_ch, out_ch, kernel_size=kernel_size))
-            elif variant == "dsc_se":
-                blocks.append(DSCSEBlock(in_ch, out_ch, kernel_size=kernel_size,
-                                         se_reduction=se_reduction))
-            elif variant == "m_dsc":
-                blocks.append(MDSCBlock(in_ch, out_ch))
-            else:
-                raise ValueError(
-                    f"Unknown DepthwiseCNN variant '{variant}'. "
-                    "Choose 'dsc', 'dsc_se', or 'm_dsc'."
-                )
-
-            # ASSUMPTION: max-pool (stride 2) after every other block
-            # (blocks 0 and 2, i.e. after the 1st and 3rd block).
-            # This halves the sequence length twice total.
-            if i in (0, 2):
-                blocks.append(nn.MaxPool1d(kernel_size=2, stride=2))
-
-        self.blocks = nn.Sequential(*blocks)
-
-        # ---- Stage 3: Head -----------------------------------------------
-        final_ch = channels[-1]
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.dropout = nn.Dropout(p=p_dropout)
-        self.classifier = nn.Linear(final_ch, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
+        """Apply depthwise then pointwise convolution.
 
         Parameters
         ----------
-        x : torch.Tensor
-            Raw byte indices, shape [B, fragment_size], dtype torch.long.
+        x:
+            Input feature map of shape ``[B, C_in, L]``.
 
         Returns
         -------
         torch.Tensor
-            Log-probabilities, shape [B, num_classes].
+            Output of shape ``[B, C_out, L']``.
         """
-        # x: [B, L]  (byte indices 0–255)
-        x = self.embedding(x)            # [B, L, embed_dim]
-        x = x.permute(0, 2, 1)          # [B, embed_dim, L]  (channels-first)
-        x = self.blocks(x)               # [B, final_ch, L']
-        x = self.pool(x).squeeze(-1)     # [B, final_ch]
-        x = self.dropout(x)
-        logits = self.classifier(x)      # [B, num_classes]
-        return F.log_softmax(logits, dim=1)
+        return self.pointwise(self.depthwise(x))
 
-    def num_parameters(self, trainable_only: bool = True) -> int:
-        params = self.parameters()
-        if trainable_only:
-            return sum(p.numel() for p in params if p.requires_grad)
-        return sum(p.numel() for p in params)
+
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation block for 1-D feature maps.
+
+    Learns per-channel attention weights via a two-layer bottleneck (squeeze
+    → excite), then re-scales the input feature map channel-wise.
+
+    Parameters
+    ----------
+    in_channels:
+        Number of input (and output) channels.
+    reduction:
+        Bottleneck reduction factor.  ``in_channels`` must be divisible by
+        ``reduction``.
+
+    Notes
+    -----
+    Following the original SE-Net paper we use a sigmoid gate (not softmax)
+    so that channels can be independently up- or down-weighted.
+    """
+
+    def __init__(self, in_channels: int, reduction: int = _SE_REDUCTION) -> None:
+        super().__init__()
+        squeezed = max(1, in_channels // reduction)
+        self.fc1 = nn.Linear(in_channels, squeezed, bias=False)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Linear(squeezed, in_channels, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Re-calibrate ``x`` with learned channel weights.
+
+        Parameters
+        ----------
+        x:
+            Feature map of shape ``[B, C, L]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Channel-re-weighted feature map of the same shape ``[B, C, L]``.
+        """
+        # Squeeze: global average pool to [B, C]
+        y: torch.Tensor = x.mean(dim=2)
+        # Excite: bottleneck FC → sigmoid gate → [B, C, 1]
+        y = self.sigmoid(self.fc2(self.relu(self.fc1(y)))).unsqueeze(-1)
+        return x * y  # broadcast over L
 
 
 # ---------------------------------------------------------------------------
-# Factory functions
+# Normalisation and activation factories
+# ---------------------------------------------------------------------------
+
+
+def _build_norm(norm_type: NormType, channels: int) -> nn.Module:
+    """Return a normalisation layer for the given channel width.
+
+    Parameters
+    ----------
+    norm_type:
+        ``"batch"`` → ``BatchNorm1d``; ``"group"`` → ``GroupNorm``.
+    channels:
+        Number of feature channels.
+
+    Returns
+    -------
+    nn.Module
+        Instantiated normalisation layer (no weights shared between calls).
+
+    Raises
+    ------
+    ValueError
+        If ``norm_type`` is not recognised.
+    """
+    if norm_type == "batch":
+        return nn.BatchNorm1d(channels)
+    if norm_type == "group":
+        # _GROUP_NORM_GROUPS must divide ``channels``; see module docstring #5
+        return nn.GroupNorm(_GROUP_NORM_GROUPS, channels)
+    raise ValueError(f"Unknown norm_type '{norm_type}'.  Expected 'batch' or 'group'.")
+
+
+def _build_act(act_type: ActType) -> nn.Module:
+    """Return an activation layer.
+
+    Parameters
+    ----------
+    act_type:
+        ``"hardswish"`` or ``"relu"``.
+
+    Returns
+    -------
+    nn.Module
+        Instantiated, stateless activation module.
+
+    Raises
+    ------
+    ValueError
+        If ``act_type`` is not recognised.
+    """
+    if act_type == "hardswish":
+        return nn.Hardswish()
+    if act_type == "relu":
+        return nn.ReLU(inplace=True)
+    raise ValueError(f"Unknown act_type '{act_type}'.  Expected 'hardswish' or 'relu'.")
+
+
+# ---------------------------------------------------------------------------
+# Inception block
+# ---------------------------------------------------------------------------
+
+
+class InceptionBlock(nn.Module):
+    """Multi-scale inception block using depthwise-separable convolutions.
+
+    Three parallel separable convolution branches (kernel sizes 11, 19, 27)
+    capture features at small, medium, and large temporal scales.  Their
+    outputs are element-wise summed and then, optionally, max-pooled.  A
+    residual shortcut is added before the activation.
+
+    Parameters
+    ----------
+    in_channels:
+        Number of channels fed into this block.
+    out_channels:
+        Number of channels produced by each branch (and the block output).
+    norm_type:
+        Normalisation strategy applied after each branch convolution.
+    act_type:
+        Activation applied after the residual add.
+    pool:
+        If ``True``, apply ``MaxPool1d(kernel_size=4, stride=4)`` to both
+        the summed branch output and the shortcut before adding them.
+
+    Notes
+    -----
+    See design decision #1 and #2 in the module docstring for the rationale
+    behind the residual implementation when channels or lengths change.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        norm_type: NormType = "batch",
+        act_type: ActType = "hardswish",
+        pool: bool = True,
+    ) -> None:
+        super().__init__()
+        self._pool = pool
+
+        # Three parallel separable convolutions — all use symmetric "same"
+        # padding so that output length equals input length before any pooling.
+        self.branch_11 = SeparableConv1d(in_channels, out_channels, kernel_size=11, padding=5)
+        self.branch_19 = SeparableConv1d(in_channels, out_channels, kernel_size=19, padding=9)
+        self.branch_27 = SeparableConv1d(in_channels, out_channels, kernel_size=27, padding=13)
+
+        # Per-branch normalisation (applied after each convolution, before summing)
+        self.norm_11 = _build_norm(norm_type, out_channels)
+        self.norm_19 = _build_norm(norm_type, out_channels)
+        self.norm_27 = _build_norm(norm_type, out_channels)
+
+        # Post-residual activation
+        self.act = _build_act(act_type)
+
+        # Optional spatial downsampling — applied to both branches and shortcut
+        self.max_pool: nn.Module = nn.MaxPool1d(kernel_size=4, stride=4) if pool else nn.Identity()
+
+        # Shortcut projection: 1×1 conv when channel dimensions change
+        # (design decision #1).  No norm on the shortcut — mirrors ResNet.
+        self.shortcut: nn.Module = (
+            nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
+            if in_channels != out_channels
+            else nn.Identity()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the inception block output.
+
+        Parameters
+        ----------
+        x:
+            Input feature map of shape ``[B, C_in, L]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Output feature map of shape ``[B, C_out, L']`` where
+            ``L' = L // 4`` if ``pool=True`` else ``L' = L``.
+        """
+        # --- Multi-scale branches ---
+        b11 = self.norm_11(self.branch_11(x))
+        b19 = self.norm_19(self.branch_19(x))
+        b27 = self.norm_27(self.branch_27(x))
+        out: torch.Tensor = b11 + b19 + b27  # element-wise sum, [B, C_out, L]
+
+        # --- Optional spatial pooling on summed branches (design decision #2) ---
+        out = self.max_pool(out)  # [B, C_out, L'] (or same if Identity)
+
+        # --- Residual shortcut (also pooled to match spatial dim) ---
+        shortcut = self.max_pool(self.shortcut(x))
+
+        # --- Add and activate ---
+        return self.act(out + shortcut)
+
+
+# ---------------------------------------------------------------------------
+# Full DepthwiseCNN model
+# ---------------------------------------------------------------------------
+
+
+class DepthwiseCNNModel(nn.Module):
+    """Lightweight file-fragment classifier using depthwise-separable convolutions.
+
+    All three variants (DSC, DSC-SE, M-DSC) are implemented within this
+    single module; the ``variant`` argument selects the configuration.
+
+    Architecture summary
+    --------------------
+    ::
+
+        [B, L] int64
+          └─ Embedding(256, embed_dim=32)       → [B, 32, L]
+          └─ Conv1d(32→32, k=19, s=2) + Norm + Act  → [B, 32, L/2]
+          └─ InceptionBlock(32→64,  pool=True)   → [B, 64, L/8]
+              └─ [DSC-SE only] SEBlock(64)
+          └─ InceptionBlock(64→64,  pool=False)  → [B, 64, L/8]
+              └─ [DSC-SE only] SEBlock(64)
+          └─ InceptionBlock(64→128, pool=True)   → [B, 128, L/32]
+              └─ [DSC-SE only] SEBlock(128)
+          └─ GlobalAveragePool                   → [B, 128, 1]
+          └─ [M-DSC only] Dropout(p=dropout_p)
+          └─ Conv1d(128→num_classes, k=1)        → [B, num_classes, 1]
+          └─ log_softmax                         → [B, num_classes]
+
+    Parameters
+    ----------
+    num_classes:
+        Number of output classes (e.g. 75 for FFT-75 Scenario 1).
+    variant:
+        One of ``"dsc"``, ``"dsc-se"``, or ``"m-dsc"``.
+    dropout_p:
+        Dropout probability for the M-DSC head.  Ignored by DSC / DSC-SE.
+
+    Inputs
+    ------
+    x : torch.Tensor
+        Integer tensor of shape ``[B, L]`` with values in ``[0, 255]``
+        representing raw byte sequences.  ``L`` may be 512 or 4 096.
+
+    Outputs
+    -------
+    torch.Tensor
+        Log-probabilities of shape ``[B, num_classes]``.  Compatible with
+        ``nn.NLLLoss`` and the framework's ``FragmentClassifier.loss()``
+        default implementation.
+    """
+
+    # All valid string identifiers for each variant
+    VALID_VARIANTS: frozenset[str] = frozenset({"dsc", "dsc-se", "m-dsc"})
+
+    def __init__(
+        self,
+        num_classes: int,
+        variant: Variant = "dsc",
+        dropout_p: float = 0.2,
+    ) -> None:
+        super().__init__()
+
+        if variant not in self.VALID_VARIANTS:
+            raise ValueError(
+                f"Unknown variant '{variant}'.  "
+                f"Choose from {sorted(self.VALID_VARIANTS)}."
+            )
+
+        self.variant: Variant = variant
+        self.num_classes: int = num_classes
+
+        # Derive per-variant configuration
+        norm_type: NormType = "group" if variant == "m-dsc" else "batch"
+        act_type: ActType = "relu" if variant == "m-dsc" else "hardswish"
+        use_se: bool = variant == "dsc-se"
+
+        # ------------------------------------------------------------------
+        # 1. Byte embedding
+        # Paper: embedding dimension 32, vocabulary = 256 byte values.
+        # ------------------------------------------------------------------
+        self.embedding = nn.Embedding(num_embeddings=256, embedding_dim=32)
+
+        # ------------------------------------------------------------------
+        # 2. First convolution
+        # DSC / DSC-SE: standard Conv1d(32→32, k=19, stride=2).
+        # M-DSC:        depthwise Conv1d(32→32, k=19, stride=2, groups=32).
+        #               Design decision #4: no pointwise mixing step is added
+        #               because the paper does not mention one here.
+        # ------------------------------------------------------------------
+        if variant == "m-dsc":
+            self.conv1: nn.Module = nn.Conv1d(
+                32, 32,
+                kernel_size=19, stride=2, padding=9,
+                groups=32, bias=False,           # purely depthwise
+            )
+        else:
+            self.conv1 = nn.Conv1d(
+                32, 32,
+                kernel_size=19, stride=2, padding=9,
+                bias=False,
+            )
+        self.norm1: nn.Module = _build_norm(norm_type, 32)
+        self.act1: nn.Module = _build_act(act_type)
+
+        # ------------------------------------------------------------------
+        # 3. Three inception blocks
+        # Block 1: 32→64, pool  (downsamples by 4)
+        # Block 2: 64→64, no pool
+        # Block 3: 64→128, pool (downsamples by 4)
+        # ------------------------------------------------------------------
+        self.block1 = InceptionBlock(32, 64, norm_type=norm_type, act_type=act_type, pool=True)
+        self.se1: nn.Module = SEBlock(64) if use_se else nn.Identity()
+
+        self.block2 = InceptionBlock(64, 64, norm_type=norm_type, act_type=act_type, pool=False)
+        self.se2: nn.Module = SEBlock(64) if use_se else nn.Identity()
+
+        self.block3 = InceptionBlock(64, 128, norm_type=norm_type, act_type=act_type, pool=True)
+        self.se3: nn.Module = SEBlock(128) if use_se else nn.Identity()
+
+        # ------------------------------------------------------------------
+        # 4. Classification head
+        # GlobalAveragePool → [optional Dropout] → 1×1 Conv1d → log_softmax
+        # Dropout is only present in M-DSC (design decision #6).
+        # ------------------------------------------------------------------
+        self.dropout: nn.Module = nn.Dropout(p=dropout_p) if variant == "m-dsc" else nn.Identity()
+        # 1×1 convolution acts as the final linear classifier over 128 features
+        self.classifier = nn.Conv1d(128, num_classes, kernel_size=1)
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run a forward pass through the model.
+
+        Parameters
+        ----------
+        x:
+            Raw byte sequence tensor of shape ``[B, L]``, dtype ``torch.long``,
+            with values in the range ``[0, 255]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Log-probabilities of shape ``[B, num_classes]``.
+
+        Shape trace (example: B=4, L=512, num_classes=75)
+        ---------------------------------------------------
+        After embedding:    [4, 32, 512]
+        After conv1:        [4, 32, 256]   (stride=2)
+        After block1 (pool):[4, 64,  64]   (÷4)
+        After block2 (no p):[4, 64,  64]
+        After block3 (pool):[4, 128, 16]   (÷4)
+        After GAP:          [4, 128,  1]
+        After classifier:   [4, 75,   1]
+        After squeeze:      [4, 75]
+        """
+        # 1. Embedding: [B, L] → [B, L, 32] → [B, 32, L] (channels-first)
+        x = self.embedding(x).transpose(1, 2)  # [B, 32, L]
+
+        # 2. First conv block
+        x = self.act1(self.norm1(self.conv1(x)))  # [B, 32, L//2]
+
+        # 3. Inception blocks (with optional SE gates)
+        x = self.se1(self.block1(x))   # [B, 64,  L//8]
+        x = self.se2(self.block2(x))   # [B, 64,  L//8]
+        x = self.se3(self.block3(x))   # [B, 128, L//32]
+
+        # 4. Global average pool → [B, 128, 1]
+        x = x.mean(dim=2, keepdim=True)
+
+        # 5. Head dropout (M-DSC only; Identity otherwise)
+        x = self.dropout(x)
+
+        # 6. 1×1 classifier → log-softmax
+        x = self.classifier(x).squeeze(-1)  # [B, num_classes]
+        return F.log_softmax(x, dim=1)
+
+    # ------------------------------------------------------------------
+    # Convenience
+    # ------------------------------------------------------------------
+
+    def extra_repr(self) -> str:
+        """Include variant and num_classes in repr string."""
+        return f"variant={self.variant!r}, num_classes={self.num_classes}"
+
+
+# ---------------------------------------------------------------------------
+# Public factory
 # ---------------------------------------------------------------------------
 
 
 def build_depthwisecnn(
     num_classes: int,
-    fragment_size: int = 512,
-    variant: str = "dsc",
-    embed_dim: int = 64,
-    channels: list[int] | None = None,
-    kernel_size: int = 3,
-    se_reduction: int = 16,
-    p_dropout: float = 0.5,
-) -> DepthwiseCNN:
-    """Construct a DepthwiseCNN from hyperparameters.
+    variant: Variant = "dsc",
+    dropout_p: float = 0.2,
+) -> DepthwiseCNNModel:
+    """Construct and return a :class:`DepthwiseCNNModel`.
 
-    This is the single factory used by the benchmark adapter.  All defaults
-    reproduce the paper's architecture as described in §III.
+    This is the **single public entry point** for instantiating any variant.
+    The adapter layer calls this factory; model code inside the benchmark
+    package should prefer this function over constructing
+    ``DepthwiseCNNModel`` directly.
+
+    Parameters
+    ----------
+    num_classes:
+        Number of output classes.  Must be ≥ 1.
+    variant:
+        Architecture variant — ``"dsc"``, ``"dsc-se"``, or ``"m-dsc"``.
+    dropout_p:
+        Dropout probability for the M-DSC head (ignored for DSC / DSC-SE).
+
+    Returns
+    -------
+    DepthwiseCNNModel
+        Freshly initialised model, moved to no particular device.
+
+    Examples
+    --------
+    >>> model = build_depthwisecnn(num_classes=75, variant="dsc-se")
+    >>> x = torch.randint(0, 256, (4, 512))   # batch of 4 × 512-byte fragments
+    >>> log_probs = model(x)                   # [4, 75]
     """
-    return DepthwiseCNN(
-        num_classes=num_classes,
-        fragment_size=fragment_size,
-        variant=variant,          # type: ignore[arg-type]
-        embed_dim=embed_dim,
-        channels=channels,
-        kernel_size=kernel_size,
-        se_reduction=se_reduction,
-        p_dropout=p_dropout,
-    )
+    if num_classes < 1:
+        raise ValueError(f"num_classes must be ≥ 1, got {num_classes}.")
+    return DepthwiseCNNModel(num_classes=num_classes, variant=variant, dropout_p=dropout_p)
