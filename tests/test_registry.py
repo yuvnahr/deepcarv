@@ -16,9 +16,21 @@ def test_registry_builds_bytercnn():
     assert model.num_classes == 5
 
 
-def test_registry_stub_models_raise_not_implemented():
+def test_registry_implemented_models_build():
+    """CarveFormer / ByteNet / DepthwiseCNN are implemented and must build.
+
+    (This test previously asserted they raised NotImplementedError, which was
+    correct while they were stubs. They are now real models.)
+    """
+    for name in ("carveformer", "bytenet", "depthwisecnn"):
+        model = build_model(name, num_classes=5)
+        assert model.num_classes == 5
+
+
+def test_registry_unimplemented_stub_still_raises():
+    """Any model still registered only as a stub must fail loudly, not silently."""
     with pytest.raises(NotImplementedError):
-        build_model("carveformer", num_classes=5)
+        build_model("deepcarv", num_classes=5)
 
 
 def test_registry_unknown_model_raises_registry_error():
