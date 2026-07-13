@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepcarv"
+version = "0.1.0"
+description = "DeepCarv – FFT-75 file-fragment classification benchmark framework"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "pyyaml>=6.0",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "benchmarks*"]
