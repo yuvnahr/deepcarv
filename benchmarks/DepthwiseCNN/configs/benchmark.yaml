@@ -1,4 +1,7 @@
 # DepthwiseCNN Benchmark Configuration
+# Phase 1 implemented.  See configs/experiments/depthwisecnn_fft75_*.yaml
+# for full composable experiment configs.
 model: depthwisecnn
 dataset: fft75
 fragment_size: 512
+variant: dsc

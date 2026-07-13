@@ -1,0 +1,17 @@
+# configs/datasets/fft75_4096.yaml
+# ----------------------------------
+# FFT-75 benchmark dataset, 4096-byte fragment size.
+#
+# Layout on disk:
+#   {root_dir}/4096/train.npz
+#   {root_dir}/4096/val.npz
+#   {root_dir}/4096/test.npz
+#
+# Keys in each NPZ:  x (byte values), y (integer class labels)
+# Classes: 75 file types (Scenario #1)
+
+name: fft75_4096
+root_dir: data/FFT-75
+fragment_size: 4096
+version: "1.0"
+num_classes: 75

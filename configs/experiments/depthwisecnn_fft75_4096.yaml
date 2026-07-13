@@ -1,0 +1,13 @@
+# configs/experiments/depthwisecnn_fft75_4096.yaml
+# --------------------------------------------------
+# DepthwiseCNN (DSC variant) on FFT-75, 4096-byte fragments.
+#
+# Run with:
+#   python -m src.core.runner --experiment configs/experiments/depthwisecnn_fft75_4096.yaml
+#   python -m src.core.runner --experiment depthwisecnn_fft75_4096
+
+name: depthwisecnn_fft75_4096
+dataset: fft75_4096
+model: depthwisecnn
+training: depthwisecnn
+evaluation: benchmark

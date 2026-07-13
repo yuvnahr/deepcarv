@@ -1,0 +1,34 @@
+# configs/training/depthwisecnn.yaml
+# ------------------------------------
+# Training hyperparameters for the DepthwiseCNN benchmark.
+#
+# The paper does not specify full training details for all hyperparameters;
+# assumptions are documented inline.  Values follow common practice for
+# lightweight 1-D CNNs trained on FFT-75.
+#
+# Paper-specified or derived values:
+#   - optimizer  : AdamW (common for CNN byte classifiers)
+#   - batch_size : 256 (ASSUMPTION: matches ByteRCNN baseline for fair comparison)
+#   - lr         : 1e-3 (ASSUMPTION: standard AdamW starting LR)
+#   - epochs     : 50 (ASSUMPTION: sufficient for convergence at this model size)
+#
+# All ASSUMPTION values should be updated once the paper publishes
+# complete training details.
+
+seed: 42
+epochs: 50
+batch_size: 256
+lr: 0.001
+learning_rate: 0.001
+weight_decay: 0.0001          # ASSUMPTION
+optimizer: adamw
+scheduler: reduce_on_plateau
+scheduler_factor: 0.5
+scheduler_patience: 3         # ASSUMPTION
+grad_clip: 1.0
+patience: 10                  # early stopping patience
+monitor: val_acc
+monitor_mode: max
+amp: true
+device: auto
+num_workers: 0
