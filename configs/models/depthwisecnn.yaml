@@ -1,0 +1,32 @@
+# configs/models/depthwisecnn.yaml
+# ----------------------------------
+# Registry key must be "depthwisecnn" (matches src/models/registry.py).
+# All fields here are forwarded as **model_kwargs to build_depthwisecnn_adapter.
+#
+# Variant selection
+# -----------------
+# variant: dsc      — Depthwise Separable CNN (baseline)
+# variant: dsc_se   — DSC + Squeeze-and-Excitation blocks
+# variant: m_dsc    — Multi-scale DSC (Inception-style, kernels 3/7/11)
+#
+# Fragment size
+# -------------
+# fragment_size: 512   — 512-byte fragments
+# fragment_size: 4096  — 4096-byte fragments
+#
+# Architecture defaults (§III of the paper)
+# ------------------------------------------
+# embed_dim     : 64           — byte embedding width (ASSUMPTION: paper implicit)
+# channels      : [64,128,256,256] — block channel widths (ASSUMPTION)
+# kernel_size   : 3            — depthwise kernel (DSC/DSC-SE; ASSUMPTION)
+# se_reduction  : 16           — SE block reduction ratio (ASSUMPTION)
+# p_dropout     : 0.5          — head dropout (ASSUMPTION: matches ByteRCNN convention)
+
+name: depthwisecnn
+variant: dsc                    # dsc | dsc_se | m_dsc
+fragment_size: 512              # 512 | 4096
+embed_dim: 64
+channels: [64, 128, 256, 256]
+kernel_size: 3
+se_reduction: 16
+p_dropout: 0.5

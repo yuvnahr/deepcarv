@@ -1,6 +1,15 @@
 name: ByteNet
-status: scaffold
-paper: TODO
-implementation: pending
-adapter: pending
+status: implemented
+paper: "ByteNet: Rethinking Multimedia File Fragment Classification through Visual Perspectives (Liu et al., 2023)"
+arxiv: https://github.com/wenyang001/Byte2Image
+implementation: complete
+adapter: src/models/adapters/bytenet_adapter.py
 config: benchmark.yaml
+variants:
+  - bytenet_resnet
+  - bytenet_former
+target_dataset: FFT-75
+target_scenario: "Scenario #1 (all 75 classes)"
+target_fragment_sizes: [512, 4096]
+reported_accuracy_512:  [0.710, 0.732]   # [ByteResNet, ByteFormer]
+reported_accuracy_4096: [0.821, 0.819]   # [ByteResNet, ByteFormer]

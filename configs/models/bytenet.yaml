@@ -1,3 +1,33 @@
 # configs/models/bytenet.yaml
-# STUB — ByteNet is registered but not implemented yet.
+# ----------------------------
+# Registry key must be "bytenet" (matches src/models/registry.py).
+# All fields here are forwarded as **model_kwargs to build_bytenet_adapter.
+#
+# Variant selection
+# -----------------
+# variant: bytenet_resnet   — ResNet blocks + n-gram embedding  (default)
+# variant: bytenet_former   — PoolFormer blocks + patch embedding
+#
+# Fragment size
+# -------------
+# fragment_size: 512   — single-chunk mode  (H=497, W=128)
+# fragment_size: 4096  — 8×512 chunking mode
+#
+# Paper defaults (§IV-B)
+# ----------------------
+#   ByteResNet:  embed_dim=96, stage_layers=[2,2,2,2], channels=[64,128,256,512]
+#   ByteFormer:  embed_dim=64 (512B)/96 (4096B), patch_size=8,
+#                stage_layers=[6,6,18,6], channels=[64,128,320,512]
+
 name: bytenet
+variant: bytenet_resnet          # bytenet_resnet | bytenet_former
+fragment_size: 512               # 512 | 4096
+ngram_n: 16                      # intrabyte n-gram window size
+
+# ByteResNet-specific (ignored for bytenet_former)
+embed_dim: 96                    # n-gram embedding dim C1
+stage_layers: [2, 2, 2, 2]      # ResNet blocks per stage
+channels: [64, 128, 256, 512]   # channel dims per stage
+
+# Shared
+byte_branch_dim: 512             # BBFE output dimension F0

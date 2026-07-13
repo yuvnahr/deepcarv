@@ -1,0 +1,16 @@
+# configs/experiments/bytenet_fft75_512.yaml
+# -------------------------------------------
+# ByteNet FFT-75 Scenario #1 — 512-byte fragments (75 classes)
+#
+# Run with:
+#   python benchmarks/ByteNet/scripts/train.py \
+#       --config configs/experiments/bytenet_fft75_512.yaml
+#
+# Or with the generic runner (once dataset_factory.py is wired):
+#   python -m src.core.runner --experiment configs/experiments/bytenet_fft75_512.yaml
+
+name: bytenet_fft75_512
+dataset: fft75_512
+model: bytenet
+training: bytenet
+evaluation: benchmark

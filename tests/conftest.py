@@ -24,6 +24,6 @@ def tiny_npz_dataset(tmp_path: Path) -> Path:
     for split, n in (("train", 40), ("val", 20), ("test", 20)):
         X = rng.integers(0, 256, size=(n, fragment_size), dtype=np.uint8)
         y = rng.integers(0, num_classes, size=(n,), dtype=np.int64)
-        np.savez(frag_dir / f"{split}.npz", X=X, y=y)
+        np.savez(frag_dir / f"{split}.npz", x=X, y=y)
 
     return root
