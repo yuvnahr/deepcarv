@@ -1,1 +1,1 @@
-\"\"\"CarveFormer benchmark package.\"\"\"
+"""CarveFormer benchmark package."""
