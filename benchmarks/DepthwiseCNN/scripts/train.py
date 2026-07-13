@@ -102,6 +102,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override training.batch_size from the config.",
     )
     p.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override training.lr from the config.",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override training.seed from the config.",
+    )
+    p.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -144,6 +156,10 @@ def _apply_cli_overrides(cfg: dict, args: argparse.Namespace) -> dict:
         cfg.setdefault("training", {})["epochs"] = args.epochs
     if args.batch_size is not None:
         cfg.setdefault("training", {})["batch_size"] = args.batch_size
+    if args.lr is not None:
+        cfg.setdefault("training", {})["lr"] = args.lr
+    if args.seed is not None:
+        cfg.setdefault("training", {})["seed"] = args.seed
     return cfg
 
 
