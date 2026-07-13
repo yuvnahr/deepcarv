@@ -20,6 +20,7 @@ from src.models.adapters.bytenet_adapter import build_bytenet_adapter
 from src.models.adapters.bytercnn_adapter import build_bytercnn_adapter
 from src.models.adapters.carveformer_adapter import build_carveformer_adapter
 from src.models.adapters.deepcarv_adapter import build_deepcarv_adapter
+from benchmarks.DepthwiseCNN.src.adapter import build_depthwisecnn_adapter
 
 ModelFactory = Callable[..., FragmentClassifier]
 
@@ -34,15 +35,19 @@ class ModelRegistryError(RuntimeError):
 # Maps model name (as used in configs/models/<name>.yaml and experiment
 # configs) -> a zero-argument-friendly factory function.
 #
-# Implemented:   bytercnn
+# Implemented:   bytercnn, depthwisecnn
 # Stub/template: carveformer, bytenet, deepcarv (raise NotImplementedError
 #                 on instantiation, but the key resolves — see
 #                 src/models/base.py:NotAvailableModel)
+#
+# depthwisecnn accepts an optional `variant` kwarg: "dsc" | "dsc-se" | "m-dsc"
+# (default "dsc").  Pass via benchmark YAML → model.kwargs.variant.
 MODEL_REGISTRY: dict[str, ModelFactory] = {
     "bytercnn": build_bytercnn_adapter,
     "carveformer": build_carveformer_adapter,
     "bytenet": build_bytenet_adapter,
     "deepcarv": build_deepcarv_adapter,
+    "depthwisecnn": build_depthwisecnn_adapter,
 }
 
 
