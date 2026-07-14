@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -45,6 +45,12 @@ class TrainerConfig:
     amp: bool = True
     device: str | None = None  # "cuda" | "cpu" | "auto"
     seed: int = 42
+    # Wall-clock budget for THIS process, in hours. When exceeded, training
+    # stops cleanly at an epoch boundary (checkpoint already written) instead of
+    # being killed mid-epoch by a platform timeout. Set slightly below the
+    # platform limit (e.g. 11.0 on a 12h Kaggle session) to leave room for
+    # evaluation and artifact upload. None = no limit.
+    max_hours: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "TrainerConfig":
@@ -130,6 +136,7 @@ class Trainer:
         self.best_ckpt_path = self.run_dir / "checkpoint_best.pt"
         self.last_ckpt_path = self.run_dir / "checkpoint_last.pt"
         self.history = TrainingHistory()
+        self.stopped_on_time_budget = False
         self._best_metric: float | None = None
         self.best_epoch: int = 0
         self.checkpoint_metadata_extra: dict[str, Any] = {
@@ -195,6 +202,13 @@ class Trainer:
             self.device, self.config.epochs, self.use_amp,
         )
 
+        run_started = time.time()
+        budget_s = (
+            self.config.max_hours * 3600.0
+            if self.config.max_hours is not None
+            else None
+        )
+
         for epoch in range(start_epoch, self.config.epochs + 1):
             t0 = time.time()
             train_result = self._run_epoch(train_loader, train=True)
@@ -251,6 +265,13 @@ class Trainer:
                 )
                 logger.info("  -> new best (%s=%.4f), checkpoint saved.", self.config.monitor, monitor_value)
 
+            # `checkpoint_last` carries everything needed to resume a run in a
+            # NEW process (e.g. after a Kaggle 12h session timeout): not just
+            # model+optimizer weights, but the scheduler position, the
+            # best-metric tracker, the early-stopping counters, and the history.
+            # Without these, a resumed run would silently restart its LR
+            # schedule, forget its best score (and overwrite a good
+            # checkpoint_best with a worse one), and reset early-stopping.
             save_checkpoint(
                 self.last_ckpt_path, self.model, self.optimizer, epoch, metrics,
                 extra={
@@ -259,6 +280,16 @@ class Trainer:
                     if hasattr(self.model, "num_parameters")
                     else None,
                     "best_validation_score": self._best_metric,
+                    "best_epoch": self.best_epoch,
+                    "scheduler_state_dict": (
+                        self.scheduler.state_dict() if self.scheduler is not None else None
+                    ),
+                    "scaler_state_dict": self.scaler.state_dict() if self.use_amp else None,
+                    "callback_states": [
+                        cb.state_dict() for cb in self.callbacks
+                        if hasattr(cb, "state_dict")
+                    ],
+                    "history": asdict(self.history),
                     **self.checkpoint_metadata_extra,
                 },
             )
@@ -271,9 +302,96 @@ class Trainer:
                 logger.info("Early stopping triggered at epoch %d.", epoch)
                 break
 
+            # Wall-clock budget check. We only stop at an epoch boundary, where
+            # checkpoint_last has just been written — so the run is always
+            # resumable. This converts "session died mid-epoch and we lost the
+            # work" into "session ended cleanly; rerun the cell to continue".
+            if budget_s is not None and epoch < self.config.epochs:
+                elapsed = time.time() - run_started
+                mean_epoch = elapsed / max(epoch - start_epoch + 1, 1)
+                if elapsed + mean_epoch > budget_s:
+                    self.stopped_on_time_budget = True
+                    remaining = self.config.epochs - epoch
+                    logger.warning(
+                        "Time budget reached (%.2f h of %.2f h used; next epoch "
+                        "would need ~%.2f h). Stopping cleanly at epoch %d/%d. "
+                        "%d epoch(s) remain — rerun to resume from "
+                        "checkpoint_last.pt in a fresh session.",
+                        elapsed / 3600, self.config.max_hours, mean_epoch / 3600,
+                        epoch, self.config.epochs, remaining,
+                    )
+                    break
+
         return self.history
 
     def resume_from(self, path: Path) -> int:
-        """Load a checkpoint and return the epoch to resume from."""
+        """Restore a full training run from a checkpoint and return the next epoch.
+
+        Restores model + optimizer weights **and** the pieces of state that a
+        naive resume silently drops: scheduler position, AMP scaler, best-metric
+        tracking, early-stopping counters, and training history.
+
+        This is what makes a run survive a Kaggle session timeout: train for as
+        long as the session allows, then resume in a fresh session and continue
+        exactly where it left off (rather than restarting the LR schedule and
+        clobbering the best checkpoint).
+        """
         ckpt = load_checkpoint(path, self.model, self.optimizer, map_location=self.device)
-        return resume_epoch(ckpt)
+
+        if self.scheduler is not None and ckpt.get("scheduler_state_dict"):
+            self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+        if self.use_amp and ckpt.get("scaler_state_dict"):
+            self.scaler.load_state_dict(ckpt["scaler_state_dict"])
+
+        if ckpt.get("best_validation_score") is not None:
+            self._best_metric = ckpt["best_validation_score"]
+        if ckpt.get("best_epoch") is not None:
+            self.best_epoch = int(ckpt["best_epoch"])
+
+        for cb, state in zip(
+            [c for c in self.callbacks if hasattr(c, "load_state_dict")],
+            ckpt.get("callback_states", []),
+        ):
+            cb.load_state_dict(state)
+
+        hist = ckpt.get("history")
+        if hist:
+            self.history = TrainingHistory(**hist)
+
+        next_epoch = resume_epoch(ckpt)
+        logger.info(
+            "Resumed from %s | next epoch=%d | best %s=%s (epoch %d) | history=%d epochs",
+            path.name, next_epoch, self.config.monitor,
+            f"{self._best_metric:.4f}" if self._best_metric is not None else "n/a",
+            self.best_epoch, len(self.history.train_loss),
+        )
+        return next_epoch
+
+    def fit_or_resume(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        on_epoch_end: Any = None,
+    ) -> TrainingHistory:
+        """Train, automatically resuming from ``checkpoint_last.pt`` if present.
+
+        Idempotent across sessions: re-running the same cell after a timeout
+        picks up where the previous session stopped. If training already
+        finished, it returns immediately without re-training.
+        """
+        start_epoch = 1
+        if self.last_ckpt_path.exists():
+            start_epoch = self.resume_from(self.last_ckpt_path)
+
+        if start_epoch > self.config.epochs:
+            logger.info(
+                "Training already complete (%d/%d epochs). Nothing to do.",
+                start_epoch - 1, self.config.epochs,
+            )
+            return self.history
+
+        return self.fit(
+            train_loader, val_loader,
+            start_epoch=start_epoch, on_epoch_end=on_epoch_end,
+        )

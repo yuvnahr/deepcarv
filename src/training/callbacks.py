@@ -8,12 +8,20 @@ and stops training when any callback signals to.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class Callback(Protocol):
     def on_epoch_end(self, epoch: int, metrics: dict[str, float]) -> bool:
         """Return True to request the trainer stop after this epoch."""
+        ...
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serializable state, so the callback survives a resumed run."""
+        ...
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore state saved by :meth:`state_dict`."""
         ...
 
 
@@ -50,6 +58,27 @@ class EarlyStopping:
         self.epochs_no_improve = 0
         self.best_epoch = 0
         self.stopped_epoch: int | None = None
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serialize the counters so early stopping survives a session restart.
+
+        Without this, resuming a run would reset ``epochs_no_improve`` to 0 and
+        the patience window would start over — training could then run far past
+        the point it should have stopped.
+        """
+        return {
+            "best": self.best,
+            "epochs_no_improve": self.epochs_no_improve,
+            "best_epoch": self.best_epoch,
+            "stopped_epoch": self.stopped_epoch,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore counters saved by :meth:`state_dict`."""
+        self.best = state.get("best")
+        self.epochs_no_improve = int(state.get("epochs_no_improve", 0))
+        self.best_epoch = int(state.get("best_epoch", 0))
+        self.stopped_epoch = state.get("stopped_epoch")
 
     def _is_improvement(self, value: float) -> bool:
         if self.best is None:

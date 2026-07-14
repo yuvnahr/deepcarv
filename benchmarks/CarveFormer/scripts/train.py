@@ -115,7 +115,8 @@ def run_training(config: dict[str, Any], overrides: dict[str, Any] | None = None
     # ---- Train (shared Trainer) ----------------------------------------
     trainer_config = TrainerConfig.from_dict(train_cfg)
     trainer = Trainer(model, trainer_config, run_outputs)
-    trainer.fit(train_loader, val_loader)
+    # Auto-resumes from checkpoint_last.pt if a previous session was cut short.
+    trainer.fit_or_resume(train_loader, val_loader)
 
     # ---- Evaluate best checkpoint (shared Evaluator) -------------------
     from src.training.checkpointing import load_checkpoint
