@@ -1,6 +1,11 @@
 name: DepthwiseCNN
-status: scaffold
-paper: TODO
-implementation: pending
-adapter: pending
+status: implemented
+paper: "File Fragment Type Classification Using Light-Weight Convolutional Neural Networks"
+implementation: benchmarks/DepthwiseCNN/src/model.py
+adapter: benchmarks/DepthwiseCNN/src/adapter.py
 config: benchmark.yaml
+variants:
+  - dsc
+  - dsc_se
+  - m_dsc
+registry_key: depthwisecnn

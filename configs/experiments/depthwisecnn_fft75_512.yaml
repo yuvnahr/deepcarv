@@ -1,0 +1,23 @@
+# configs/experiments/depthwisecnn_fft75_512.yaml
+# -------------------------------------------------
+# DepthwiseCNN (DSC variant) on FFT-75, 512-byte fragments.
+#
+# Run with:
+#   python -m src.core.runner --experiment configs/experiments/depthwisecnn_fft75_512.yaml
+#   python -m src.core.runner --experiment depthwisecnn_fft75_512
+#
+# Or with the benchmark training script:
+#   python benchmarks/DepthwiseCNN/scripts/train.py \
+#       --config configs/experiments/depthwisecnn_fft75_512.yaml
+#
+# Sanity run (2 epochs, 2000 samples):
+#   python benchmarks/DepthwiseCNN/scripts/train.py \
+#       --config configs/experiments/depthwisecnn_fft75_512.yaml --sanity
+#
+# Change variant to 'dsc_se' or 'm_dsc' for the other paper variants.
+
+name: depthwisecnn_fft75_512
+dataset: fft75_512
+model: depthwisecnn
+training: depthwisecnn
+evaluation: benchmark

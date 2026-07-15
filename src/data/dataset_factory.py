@@ -1,19 +1,25 @@
 """
 src/data/dataset_factory.py
-============================
-Config-driven construction of train/val/test datasets and dataloaders.
+------------------------------
+Dataset factory for the DeepCarv benchmark framework.
 
-This module exists so the trainer, evaluator, and unified runner never
-construct :class:`~src.data.dataset.FragmentDataset` directly — dataset-layout
-knowledge stays isolated here. Adding a new dataset format later means adding a
-branch in this file, not touching the trainer.
+Provides:
+    build_datasets  — construct train/val/test FragmentDataset objects from
+                      a dataset config dict.
+    build_dataloaders — wrap the datasets in DataLoader objects, using
+                        training and evaluation configs for batch sizes /
+                        worker counts.
 
-Memory note
------------
-``mmap`` defaults to ``True``. FFT-75 at 4096-byte fragments has a ~25 GB
-training split, which cannot be read into a ~13 GB Kaggle instance. Memory-
-mapping streams batches straight off disk and keeps resident memory near-flat,
-which is what makes full-scale training possible. See ``src/data/npz_mmap.py``.
+This module is the ONLY supported way for the generic runner to instantiate
+datasets.  Dataset code (FragmentDataset) lives in src/data/dataset.py;
+no model-specific dataset handling belongs here.
+
+Config keys expected in `dataset_config`
+-----------------------------------------
+    root_dir      : str | Path  — FFT-75 root directory
+    fragment_size : int         — 512 or 4096
+    version       : str         — dataset version tag (optional)
+    tiny_subset   : bool | int  — restrict to N samples (for sanity runs)
 """
 
 from __future__ import annotations
@@ -24,36 +30,37 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from src.data.dataset import FragmentDataset, build_dataloader
+from src.utils.paths import FFT75_DATA_DIR
 
 
-def build_datasets(dataset_cfg: dict[str, Any]) -> dict[str, FragmentDataset]:
-    """Build ``{"train": ds, "val": ds, "test": ds}`` from a dataset config.
+def build_datasets(
+    dataset_config: dict[str, Any],
+    tiny_subset: bool | int = False,
+) -> dict[str, FragmentDataset]:
+    """Construct train/val/test datasets from a dataset config dict.
 
-    Recognised keys
-    ---------------
-    root_dir:
-        Root FFT-75 directory (``{root_dir}/{fragment_size}/{split}.npz``).
-    fragment_size:
-        512 or 4096.
-    cache:
-        Hold the split in RAM (ignored when ``mmap`` succeeds).
-    mmap:
-        Memory-map the NPZ instead of loading it into RAM (default ``True``).
-    tiny_subset:
-        Optional cap on sample count, for smoke tests only.
+    Parameters
+    ----------
+    dataset_config : dict
+        Must contain 'fragment_size'.  'root_dir' defaults to FFT75_DATA_DIR.
+    tiny_subset : bool | int
+        If True, keep 2 000 samples per split (sanity mode).
+        If a positive int, keep that many samples.
+
+    Returns
+    -------
+    dict with keys "train", "val", "test".
     """
-    fmt = dataset_cfg.get("format", "npz")
-    if fmt != "npz":
-        raise ValueError(
-            f"Unsupported dataset format '{fmt}'. Only 'npz' is implemented. "
-            "Add a new branch here (not in the trainer) to support new formats."
-        )
+    root_dir = Path(dataset_config.get("root_dir", FFT75_DATA_DIR))
+    if not root_dir.is_absolute():
+        # Resolve relative paths against the repo root via FFT75_DATA_DIR's parent
+        from src.utils.paths import REPO_ROOT
+        root_dir = REPO_ROOT / root_dir
 
-    root_dir = Path(dataset_cfg.get("root_dir", "data/FFT-75"))
-    fragment_size = int(dataset_cfg.get("fragment_size", 512))
-    cache = bool(dataset_cfg.get("cache", True))
-    mmap = bool(dataset_cfg.get("mmap", True))
-    tiny_subset: bool | int = dataset_cfg.get("tiny_subset") or False
+    fragment_size = int(dataset_config["fragment_size"])
+    tiny = dataset_config.get("tiny_subset", tiny_subset)
+    cache = dataset_config.get("cache", True)
+    mmap = dataset_config.get("mmap", False)
 
     datasets: dict[str, FragmentDataset] = {}
     for split in ("train", "val", "test"):
@@ -63,33 +70,59 @@ def build_datasets(dataset_cfg: dict[str, Any]) -> dict[str, FragmentDataset]:
             fragment_size=fragment_size,
             cache=cache,
             mmap=mmap,
-            tiny_subset=tiny_subset,
+            tiny_subset=tiny,
         )
     return datasets
 
 
 def build_dataloaders(
     datasets: dict[str, FragmentDataset],
-    training_cfg: dict[str, Any],
+    training_config: dict[str, Any] | None = None,
+    evaluation_config: dict[str, Any] | None = None,
+    # Legacy aliases accepted for backwards compatibility with pre-existing tests
+    training_cfg: dict[str, Any] | None = None,
     eval_cfg: dict[str, Any] | None = None,
 ) -> dict[str, DataLoader]:
-    """Build ``{"train": loader, "val": loader, "test": loader}``."""
-    eval_cfg = eval_cfg or {}
-    train_bs = int(training_cfg.get("batch_size", 256))
-    eval_bs = int(eval_cfg.get("batch_size", train_bs))
-    num_workers = int(training_cfg.get("num_workers", 0))
+    """Wrap datasets in DataLoaders using training/evaluation config values.
 
-    return {
-        "train": build_dataloader(
-            datasets["train"], batch_size=train_bs, shuffle=True,
-            drop_last=True, num_workers=num_workers,
-        ),
-        "val": build_dataloader(
-            datasets["val"], batch_size=eval_bs, shuffle=False,
+    Parameters
+    ----------
+    datasets : dict
+        Mapping of split name -> FragmentDataset.
+    training_config : dict
+        Training config; used for batch_size, num_workers for train split.
+        Alias: training_cfg (accepted for backwards compatibility).
+    evaluation_config : dict
+        Evaluation config; used for batch_size for val/test splits.
+        Alias: eval_cfg (accepted for backwards compatibility).
+
+    Returns
+    -------
+    dict with keys "train", "val", "test".
+    """
+    # Accept legacy kwarg names
+    _train_cfg: dict[str, Any] = training_config or training_cfg or {}
+    _eval_cfg: dict[str, Any] = evaluation_config or eval_cfg or {}
+
+    train_bs = int(_train_cfg.get("batch_size", 256))
+    eval_bs = int(_eval_cfg.get("batch_size", train_bs))
+    num_workers = int(_train_cfg.get("num_workers", 0))
+
+    loaders: dict[str, DataLoader] = {}
+
+    loaders["train"] = build_dataloader(
+        datasets["train"],
+        batch_size=train_bs,
+        shuffle=True,
+        num_workers=num_workers,
+        drop_last=True,
+    )
+    for split in ("val", "test"):
+        loaders[split] = build_dataloader(
+            datasets[split],
+            batch_size=eval_bs,
+            shuffle=False,
             num_workers=num_workers,
-        ),
-        "test": build_dataloader(
-            datasets["test"], batch_size=eval_bs, shuffle=False,
-            num_workers=num_workers,
-        ),
-    }
+            drop_last=False,
+        )
+    return loaders

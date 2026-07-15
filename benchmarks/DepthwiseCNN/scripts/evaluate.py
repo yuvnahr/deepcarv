@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"[evaluate] Checkpoint not found: {args.checkpoint}")
 
     # --- Run identifier ---
-    variant = model_cfg.get("kwargs", {}).get("variant", "dsc")
+    variant = args.variant or model_cfg.get("kwargs", {}).get("variant", "dsc")
     run_name = args.run_name or f"depthwisecnn_eval_{variant}_{fragment_size}b_{split}"
 
     # --- Logging ---

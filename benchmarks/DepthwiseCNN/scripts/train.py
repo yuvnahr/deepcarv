@@ -144,6 +144,10 @@ def _apply_cli_overrides(cfg: dict, args: argparse.Namespace) -> dict:
         cfg.setdefault("training", {})["epochs"] = args.epochs
     if args.batch_size is not None:
         cfg.setdefault("training", {})["batch_size"] = args.batch_size
+    if args.lr is not None:
+        cfg.setdefault("training", {})["lr"] = args.lr
+    if args.seed is not None:
+        cfg.setdefault("training", {})["seed"] = args.seed
     return cfg
 
 
@@ -228,16 +232,14 @@ def main(argv: list[str] | None = None) -> None:
         trainer_config = TrainerConfig.from_dict(train_cfg)
         trainer = Trainer(model, trainer_config, run_outputs)
 
-        # --- Train (auto-resumes from checkpoint_last.pt) ---
-        # An explicit --resume path still wins; otherwise fit_or_resume picks up
-        # checkpoint_last.pt automatically, so a run cut short by a session
-        # timeout continues simply by re-running this script.
+        # --- Optional resume ---
+        start_epoch = 1
         if args.resume is not None:
             start_epoch = trainer.resume_from(args.resume)
             run_logger.info("Resumed from %s (starting at epoch %d)", args.resume, start_epoch)
-            history = trainer.fit(train_loader, val_loader, start_epoch=start_epoch)
-        else:
-            history = trainer.fit_or_resume(train_loader, val_loader)
+
+        # --- Train ---
+        history = trainer.fit(train_loader, val_loader, start_epoch=start_epoch)
 
         # --- Summary ---
         best_acc: float = trainer._best_metric or 0.0

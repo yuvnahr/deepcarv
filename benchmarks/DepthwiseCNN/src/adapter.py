@@ -118,11 +118,16 @@ class DepthwiseCNNAdapter(FragmentClassifier):
         # framework itself but useful for introspection and serialisation.
         self.variant: Variant = variant
 
+        # Extract only what the strict paper implementation accepts.
+        # The benchmark YAML passes structural params (embed_dim, etc) but
+        # model.py hardcodes them to match the paper. We safely ignore them.
+        dropout_p = model_kwargs.get("dropout_p", model_kwargs.get("p_dropout", 0.2))
+
         # Build the underlying architecture — no side effects beyond this.
         self._model: DepthwiseCNNModel = build_depthwisecnn(
             num_classes=num_classes,
             variant=variant,
-            **model_kwargs,
+            dropout_p=float(dropout_p),
         )
 
     # ------------------------------------------------------------------
