@@ -228,14 +228,16 @@ def main(argv: list[str] | None = None) -> None:
         trainer_config = TrainerConfig.from_dict(train_cfg)
         trainer = Trainer(model, trainer_config, run_outputs)
 
-        # --- Optional resume ---
-        start_epoch = 1
+        # --- Train (auto-resumes from checkpoint_last.pt) ---
+        # An explicit --resume path still wins; otherwise fit_or_resume picks up
+        # checkpoint_last.pt automatically, so a run cut short by a session
+        # timeout continues simply by re-running this script.
         if args.resume is not None:
             start_epoch = trainer.resume_from(args.resume)
             run_logger.info("Resumed from %s (starting at epoch %d)", args.resume, start_epoch)
-
-        # --- Train ---
-        history = trainer.fit(train_loader, val_loader, start_epoch=start_epoch)
+            history = trainer.fit(train_loader, val_loader, start_epoch=start_epoch)
+        else:
+            history = trainer.fit_or_resume(train_loader, val_loader)
 
         # --- Summary ---
         best_acc: float = trainer._best_metric or 0.0

@@ -46,6 +46,8 @@ from typing import Any
 
 import numpy as np
 import torch
+
+from src.data.npz_mmap import is_mmappable, mmap_npz_member
 from torch.utils.data import DataLoader, Dataset
 
 # ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ class FragmentDataset(Dataset):
         split: str,
         fragment_size: int = 512,
         cache: bool = True,
+        mmap: bool = True,
         tiny_subset: bool | int = False,
     ) -> None:
         if split not in VALID_SPLITS:
@@ -105,15 +108,31 @@ class FragmentDataset(Dataset):
             )
 
         # ---- Load arrays -------------------------------------------------
-        data = np.load(str(npz_path))
-        if set(data.files) != {"x", "y"}:
-            raise ValueError(
-                f"{npz_path.name} must contain exactly keys ['X', 'y'], "
-                f"got {data.files}"
-            )
+        # `mmap` mode maps the arrays straight off disk instead of reading them
+        # into RAM. This is what makes full-scale FFT-75 (esp. 4096-byte
+        # fragments, ~25 GB train split) trainable on a ~13 GB Kaggle instance:
+        # the OS pages in only the batches actually touched, so resident memory
+        # stays near-flat regardless of dataset size.
+        self._mmapped = False
+        X: np.ndarray
+        y: np.ndarray
 
-        X: np.ndarray = data["x"]
-        y: np.ndarray = data["y"]
+        if mmap and is_mmappable(npz_path):
+            X_mm = mmap_npz_member(npz_path, "x")
+            y_mm = mmap_npz_member(npz_path, "y")
+            if X_mm is not None and y_mm is not None:
+                X, y = X_mm, y_mm
+                self._mmapped = True
+
+        if not self._mmapped:
+            data = np.load(str(npz_path))
+            keys = {k.lower(): k for k in data.files}
+            if "x" not in keys or "y" not in keys:
+                raise ValueError(
+                    f"{npz_path.name} must contain x/y arrays, got {data.files}"
+                )
+            X = data[keys["x"]]
+            y = data[keys["y"]]
 
         if X.ndim != 2 or X.shape[1] != fragment_size:
             raise ValueError(
@@ -140,15 +159,25 @@ class FragmentDataset(Dataset):
         unique_labels = np.unique(y)
         self.class_labels: list[int] = unique_labels.tolist()
 
-        # ---- Optional caching (always True by default) -------------------
-        if cache:
-            # Store X as int16 (byte values 0-255 fit comfortably — 4x less RAM
-            # than int64). Cast to int64 lazily in __getitem__ per batch.
-            self._X = torch.from_numpy(X.astype(np.int16))   # [N, L]  ~2 bytes/elem
-            self._y = torch.from_numpy(y.astype(np.int64))   # [N]
+        # ---- Storage mode ------------------------------------------------
+        # Priority: mmap (zero RAM) > cache (RAM-resident) > lazy numpy.
+        #
+        # NOTE: the previous implementation cached X as int16, which DOUBLED
+        # memory for no benefit — byte values are 0-255 and fit in uint8. At
+        # 4096-byte fragments that upcast alone turned a 25 GB train split into
+        # 50 GB (75 GB peak while both copies coexisted), which is the direct
+        # cause of the Kaggle RAM overflows. X is now kept in its native uint8
+        # and cast to int64 per batch in __getitem__ (negligible cost).
+        if self._mmapped:
+            # Keep the memmap views; do NOT copy into RAM.
+            self._X_np = X
+            self._y_np = y
+            self._cached = False
+        elif cache:
+            self._X = torch.from_numpy(np.ascontiguousarray(X))  # native uint8
+            self._y = torch.from_numpy(y.astype(np.int64))
             self._cached = True
         else:
-            # Keep as numpy, convert per-item
             self._X_np = X
             self._y_np = y
             self._cached = False
@@ -164,10 +193,13 @@ class FragmentDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         if self._cached:
-            # Cast X from int16 → int64 here (per batch, negligible overhead)
+            # Stored natively as uint8; cast to int64 per item (cheap).
             return self._X[idx].to(torch.int64), self._y[idx]
+        # mmap / lazy-numpy path. np.asarray() on a memmap row copies just that
+        # row (a few KB), so RAM stays flat no matter how large the file is.
+        row = np.asarray(self._X_np[idx], dtype=np.int64)
         return (
-            torch.from_numpy(self._X_np[idx].astype(np.int64)),
+            torch.from_numpy(row),
             torch.tensor(int(self._y_np[idx]), dtype=torch.long),
         )
 
@@ -178,7 +210,7 @@ class FragmentDataset(Dataset):
             f"n={self._n:,}, "
             f"fragment_size={self.fragment_size}, "
             f"num_classes={self.num_classes}, "
-            f"cached={self._cached})"
+            f"cached={self._cached}, mmapped={self._mmapped})"
         )
 
 
