@@ -1,6 +1,10 @@
 name: CarveFormer
-status: scaffold
-paper: TODO
-implementation: pending
-adapter: pending
-config: benchmark.yaml
+status: implemented
+paper: "Guzhov & Wirth, Transformer-Based File Fragment Type Classification for File Carving in Digital Forensics (ECCWS 2025)"
+registry_key: carveformer
+backbone: swinv2_tiny_window8_256
+embedding_dim: 96
+fragment_sizes: [512, 4096]
+implementation: benchmarks/CarveFormer/src/model.py
+adapter: benchmarks/CarveFormer/src/adapter.py
+config: configs/benchmark.yaml

@@ -111,20 +111,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override dataset.fragment_size from the config.",
     )
     p.add_argument(
-        "--variant",
-        type=str,
-        default=None,
-        choices=["dsc", "dsc-se", "m-dsc"],
-        help="Override model.kwargs.variant from the config.",
-    )
-    p.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        dest="batch_size",
-        help="Override evaluation.batch_size from the config.",
-    )
-    p.add_argument(
         "--run-name",
         type=str,
         default=None,
@@ -170,7 +156,7 @@ def main(argv: list[str] | None = None) -> None:
     cache: bool = bool(ds_cfg.get("cache", True))
 
     split: str = args.split or eval_cfg.get("split", "test")
-    batch_size: int = int(args.batch_size or eval_cfg.get("batch_size", 512))
+    batch_size: int = int(eval_cfg.get("batch_size", 512))
 
     default_eval_dir = Path(
         path_cfg.get("eval_outputs", str(OUTPUTS_DIR / "DepthwiseCNN" / "eval"))
@@ -210,14 +196,10 @@ def main(argv: list[str] | None = None) -> None:
         )
 
         # --- Model (via registry) ---
-        model_kwargs = model_cfg.get("kwargs", {})
-        if args.variant:
-            model_kwargs["variant"] = args.variant
-            
         model = build_model(
             model_cfg["name"],
             num_classes=eval_ds.num_classes,
-            **model_kwargs,
+            **model_cfg.get("kwargs", {}),
         )
         run_logger.info(
             "Model: %s | classes=%d | params=%s",

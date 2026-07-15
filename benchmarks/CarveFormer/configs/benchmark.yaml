@@ -1,4 +1,55 @@
+# ===========================================================================
 # CarveFormer Benchmark Configuration
-model: carveformer
-dataset: fft75
-fragment_size: 512
+# ===========================================================================
+# One config controls the whole benchmark. Switching between 512- and
+# 4096-byte fragments is done ONLY by changing dataset.fragment_size (and the
+# matching reshape grid is derived automatically in the model).
+#
+# Paper hyperparameters (Guzhov & Wirth, ECCWS 2025):
+#   AdamW, lr=3.75e-4, weight_decay=0.05, effective batch size 1024, 50 epochs.
+# ---------------------------------------------------------------------------
+
+model:
+  name: carveformer          # registry key (src/models/registry.py)
+  backbone: swinv2_tiny_window8_256
+  embed_dim: 96              # paper byte-embedding dim (must match backbone stage-0)
+  pretrained: true          # ImageNet1k init (paper default); set false for offline
+  drop_rate: 0.0            # classifier-head dropout
+
+dataset:
+  root_dir: data/FFT-75      # {root_dir}/{fragment_size}/{train,val,test}.npz
+  fragment_size: 512         # 512 or 4096 — the ONLY switch needed to change block size
+  num_classes: 75            # FFT-75 scenario #1 (11/25/5/2/2 for scenarios #2–#6)
+  cache: true
+
+training:
+  seed: 42
+  epochs: 50                 # paper
+  # Effective batch size 1024 (paper). On limited VRAM, keep batch_size small
+  # and raise grad_accum so batch_size * grad_accum == 1024.
+  batch_size: 64
+  grad_accum: 16             # 64 * 16 = 1024 effective
+  learning_rate: 3.75e-4     # paper
+  lr: 3.75e-4                # alias accepted by TrainerConfig
+  weight_decay: 0.05         # paper
+  optimizer: adamw
+  scheduler: cosine          # paper warms up then decays; cosine is the closest built-in
+  grad_clip: 1.0
+  patience: 8                # early stopping (paper trains a fixed 50 epochs; this guards runaway)
+  monitor: val_acc
+  monitor_mode: max
+  amp: true                  # mixed precision when CUDA is available
+  device: auto               # auto | cuda | cpu
+  num_workers: 2
+
+paths:
+  # Local run outputs. The framework writes the standardized output set here
+  # (metrics.json, summary.json, predictions.csv, confusion_matrix.csv,
+  # per_class_metrics.csv, classification_report.txt, checkpoints, plots).
+  run_outputs: benchmarks/CarveFormer/outputs
+  checkpoints: benchmarks/CarveFormer/checkpoints
+
+kaggle:
+  # Paths used by the Kaggle notebook. Overridden there as needed.
+  data_dir: /kaggle/input/fft-75/FFT-75
+  working_dir: /kaggle/working/carveformer

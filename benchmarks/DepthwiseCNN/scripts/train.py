@@ -102,18 +102,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override training.batch_size from the config.",
     )
     p.add_argument(
-        "--lr",
-        type=float,
-        default=None,
-        help="Override training.lr from the config.",
-    )
-    p.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Override training.seed from the config.",
-    )
-    p.add_argument(
         "--resume",
         type=Path,
         default=None,

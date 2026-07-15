@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import yaml
 
 from src.data.dataset import FragmentDataset, build_dataloader
@@ -94,13 +94,13 @@ def _run_epoch(
     n_batches = len(loader)
     t0 = _time.time()
 
-    scaler = GradScaler(enabled=torch.cuda.is_available())
+    scaler = GradScaler('cuda', enabled=torch.cuda.is_available())
     with context:
         for batch_idx, (x, y) in enumerate(loader, 1):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            with autocast(enabled=torch.cuda.is_available()):
+            with autocast('cuda', enabled=torch.cuda.is_available()):
                 log_probs = model(x)
                 loss = criterion(log_probs, y)
 
@@ -282,6 +282,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # ---- Training loop --------------------------------------------------
     best_val_acc = -1.0
+    
+    if args.resume and args.resume.exists():
+        # Restore best_val_acc so we don't blindly overwrite it if the first resumed epoch is worse
+        best_val_acc = ckpt.get("val_acc", -1.0)
+        
     epochs_no_improve = 0
     train_losses, val_losses, train_accs, val_accs = [], [], [], []
 

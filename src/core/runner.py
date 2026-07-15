@@ -85,7 +85,8 @@ def run_experiment(
             trainer.checkpoint_metadata_extra["dataset_fingerprint"] = fingerprint.to_dict()
         except Exception as exc:
             logger.warning("Dataset fingerprint generation skipped: %s", exc)
-        history = trainer.fit(loaders["train"], loaders["val"])
+        # Auto-resumes from checkpoint_last.pt if a previous session was cut short.
+        history = trainer.fit_or_resume(loaders["train"], loaders["val"])
 
         # ---- Plots -----------------------------------------------------------
         plot_loss_curve(history.train_loss, history.val_loss, run_dir / "loss_curve.png")

@@ -66,8 +66,9 @@ def build_datasets(
             root_dir=root_dir,
             split=split,
             fragment_size=fragment_size,
-            cache=True,
-            tiny_subset=tiny,
+            cache=cache,
+            mmap=mmap,
+            tiny_subset=tiny_subset,
         )
     return datasets
 
