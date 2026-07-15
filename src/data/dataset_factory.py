@@ -59,6 +59,8 @@ def build_datasets(
 
     fragment_size = int(dataset_config["fragment_size"])
     tiny = dataset_config.get("tiny_subset", tiny_subset)
+    cache = dataset_config.get("cache", True)
+    mmap = dataset_config.get("mmap", False)
 
     datasets: dict[str, FragmentDataset] = {}
     for split in ("train", "val", "test"):
@@ -68,7 +70,7 @@ def build_datasets(
             fragment_size=fragment_size,
             cache=cache,
             mmap=mmap,
-            tiny_subset=tiny_subset,
+            tiny_subset=tiny,
         )
     return datasets
 
